@@ -38,6 +38,16 @@ $fpLower   = $filePath.ToLowerInvariant()
 $homeLower = $homeAbs.ToLowerInvariant()
 if (-not ($fpLower.StartsWith($homeLower + '\') -or $fpLower -eq $homeLower)) { exit 0 }
 
+# --- auto-register per-repo qmd context on first write for a repo ---
+# Matches <home>\{notes|docs}\<repo>\... — extract <repo>, drop a marker so we
+# only register once per repo per machine.
+$rel = $filePath.Substring($homeAbs.Length).TrimStart('\')
+$relParts = $rel -split '[\\/]+'
+$repoToRegister = $null
+if ($relParts.Count -ge 3 -and ($relParts[0] -ieq 'notes' -or $relParts[0] -ieq 'docs')) {
+  $repoToRegister = $relParts[1]
+}
+
 # Serialize concurrent reindexes with a directory-as-lock
 $lockDir  = Join-Path $env:TEMP 'lorekeeper'
 New-Item -ItemType Directory -Force -Path $lockDir | Out-Null
@@ -49,9 +59,33 @@ try {
   exit 0  # another reindex in flight
 }
 
-# Spawn detached background reindex; child removes the lock when done
+# Build the background command. Register contexts (idempotent via marker) then reindex.
 $escapedLock = $lockPath.Replace("'", "''")
-$cmd = "try { & qmd update; & qmd embed } finally { Remove-Item -LiteralPath '$escapedLock' -Recurse -Force -ErrorAction SilentlyContinue }"
+$ctxSnippet = ''
+if ($repoToRegister) {
+  $markerDir  = Join-Path $LorekeeperHome '.contexts'
+  $markerFile = Join-Path $markerDir $repoToRegister
+  $mdEsc = $markerDir.Replace("'", "''")
+  $mfEsc = $markerFile.Replace("'", "''")
+  $repoEsc = $repoToRegister.Replace("'", "''")
+  $ctxSnippet = @"
+if (-not (Test-Path -LiteralPath '$mfEsc')) {
+  New-Item -ItemType Directory -Force -Path '$mdEsc' | Out-Null
+  & qmd context add "qmd://lorekeeper-notes/$repoEsc" "Memory for repo '$repoEsc'" 2>&1 | Out-Null
+  & qmd context add "qmd://lorekeeper-docs/$repoEsc"  "Reference docs for repo '$repoEsc'" 2>&1 | Out-Null
+  New-Item -ItemType File -Force -Path '$mfEsc' | Out-Null
+}
+"@
+}
+$cmd = @"
+try {
+  $ctxSnippet
+  & qmd update
+  & qmd embed
+} finally {
+  Remove-Item -LiteralPath '$escapedLock' -Recurse -Force -ErrorAction SilentlyContinue
+}
+"@
 Start-Process -WindowStyle Hidden -FilePath 'powershell' `
   -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-Command',$cmd | Out-Null
 

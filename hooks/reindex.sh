@@ -25,6 +25,31 @@ case "$abs" in
   *) exit 0 ;;
 esac
 
+# --- auto-register per-repo qmd context on first write for a repo ---
+# Match <home>/{notes|docs}/<repo>/... and extract <repo>. A marker under
+# <home>/.contexts/<repo> gates the one-time qmd context add.
+rel="${abs#"$LOREKEEPER_HOME"/}"
+repo_to_register=""
+case "$rel" in
+  notes/*/*|docs/*/*)
+    # strip leading "notes/" or "docs/", take next segment
+    tmp="${rel#*/}"
+    repo_to_register="${tmp%%/*}"
+    ;;
+esac
+
+register_context() {
+  local repo="$1"
+  [[ -z "$repo" ]] && return 0
+  local marker_dir="$LOREKEEPER_HOME/.contexts"
+  local marker="$marker_dir/$repo"
+  [[ -e "$marker" ]] && return 0
+  mkdir -p "$marker_dir"
+  qmd context add "qmd://lorekeeper-notes/$repo" "Memory for repo '$repo'"      >/dev/null 2>&1 || true
+  qmd context add "qmd://lorekeeper-docs/$repo"  "Reference docs for repo '$repo'" >/dev/null 2>&1 || true
+  : > "$marker"
+}
+
 # Serialize concurrent reindexes with a lock — flock if available, fallback to mkdir
 lock_dir="${XDG_RUNTIME_DIR:-/tmp}/lorekeeper"
 mkdir -p "$lock_dir"
@@ -34,10 +59,12 @@ lock="$lock_dir/reindex.lock"
   if command -v flock >/dev/null; then
     exec 9>"$lock"
     flock -n 9 || exit 0
+    register_context "$repo_to_register"
     qmd update && qmd embed
   else
     if mkdir "$lock.d" 2>/dev/null; then
       trap 'rmdir "$lock.d" 2>/dev/null' EXIT
+      register_context "$repo_to_register"
       qmd update && qmd embed
     fi
   fi

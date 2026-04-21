@@ -80,5 +80,14 @@ polished reference.
 
 - You do not need to run `qmd update` or `qmd embed` after writing — a
   PostToolUse hook handles that automatically.
+- The first write into `notes/<repo>/` or `docs/<repo>/` also auto-registers
+  generic qmd contexts for that repo (description: `"Memory for repo '<repo>'"`).
+  Once you've written ~3+ notes and have a clearer picture of what's in there,
+  replace the generic description by running this via the Bash tool:
+  ```
+  qmd context add qmd://lorekeeper-notes/<repo> "<one-line summary of what the notes actually cover>"
+  ```
+  `qmd context add` overwrites. Do the same for `lorekeeper-docs/<repo>` if
+  durable docs exist. Skip this on repos with sparse or generic notes.
 - If the user explicitly says "don't write notes" for a session, respect that
   and skip the write policy entirely for that conversation.

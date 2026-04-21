@@ -69,4 +69,8 @@ Notes = scratch. Docs = polished.
 ### mechanics
 
 - No manual `qmd update` or `qmd embed`. PostToolUse hook auto-reindex.
+- First write to `notes/<repo>/` or `docs/<repo>/` auto-registers generic qmd
+  context (`"Memory for repo '<repo>'"`). After ~3+ notes, replace with real
+  blurb via Bash: `qmd context add qmd://lorekeeper-notes/<repo> "<summary>"`.
+  Overwrites. Same for `lorekeeper-docs/<repo>` if polished docs exist.
 - User says "don't write notes" → skip write policy for session.
