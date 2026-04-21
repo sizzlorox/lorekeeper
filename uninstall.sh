@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# lorekeeper uninstaller
+# Removes hooks, CLAUDE.md block, qmd collections. Leaves notes/docs untouched.
+
+set -euo pipefail
+
+CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+BIN_DIR="${LOREKEEPER_BIN:-$HOME/.local/bin}"
+
+say()  { printf "\033[1;34m==>\033[0m %s\n" "$*"; }
+
+# --- remove hook files ---
+say "removing hook scripts"
+rm -f "$CLAUDE_DIR/hooks/lorekeeper-prime.sh" "$CLAUDE_DIR/hooks/lorekeeper-reindex.sh"
+
+# --- scrub settings.json ---
+SETTINGS="$CLAUDE_DIR/settings.json"
+if [[ -f "$SETTINGS" ]]; then
+  say "scrubbing hook entries from $SETTINGS"
+  TMP="$(mktemp)"
+  jq '
+    def scrub:
+      map(
+        .hooks |= (map(select((.command | tostring) | test("lorekeeper-(prime|reindex)\\.sh") | not)))
+      )
+      | map(select((.hooks // []) | length > 0));
+    if .hooks then
+      .hooks.SessionStart      = ((.hooks.SessionStart      // []) | scrub) |
+      .hooks.UserPromptSubmit  = ((.hooks.UserPromptSubmit  // []) | scrub) |
+      .hooks.PostToolUse       = ((.hooks.PostToolUse       // []) | scrub)
+    else . end
+  ' "$SETTINGS" > "$TMP"
+  mv "$TMP" "$SETTINGS"
+fi
+
+# --- remove CLAUDE.md block ---
+CLAUDE_MD="$CLAUDE_DIR/CLAUDE.md"
+if [[ -f "$CLAUDE_MD" ]] && grep -qF "<!-- LOREKEEPER:START -->" "$CLAUDE_MD"; then
+  say "removing policy block from $CLAUDE_MD"
+  awk '
+    BEGIN { skip = 0 }
+    /<!-- LOREKEEPER:START -->/ { skip = 1; next }
+    /<!-- LOREKEEPER:END -->/   { skip = 0; next }
+    !skip
+  ' "$CLAUDE_MD" > "$CLAUDE_MD.tmp"
+  mv "$CLAUDE_MD.tmp" "$CLAUDE_MD"
+fi
+
+# --- qmd collections ---
+say "removing qmd collections (notes + docs)"
+qmd collection remove lorekeeper-notes 2>/dev/null || true
+qmd collection remove lorekeeper-docs  2>/dev/null || true
+
+# --- CLI + state ---
+rm -f "$BIN_DIR/lorekeeper"
+rm -f "$CLAUDE_DIR/.lorekeeper-home"
+
+cat <<EOF
+
+uninstalled. your notes and docs are still at:
+  $(cat "$CLAUDE_DIR/.lorekeeper-home" 2>/dev/null || echo '  (see $LOREKEEPER_HOME or ~/.local/share/lorekeeper)')
+
+delete them by hand if you want them gone.
+EOF

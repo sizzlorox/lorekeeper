@@ -1,0 +1,151 @@
+#!/usr/bin/env bash
+# lorekeeper CLI — lightweight wrapper around qmd + filesystem operations.
+
+set -euo pipefail
+
+CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+LOREKEEPER_HOME="$(cat "$CLAUDE_DIR/.lorekeeper-home" 2>/dev/null || echo "$HOME/.local/share/lorekeeper")"
+
+USAGE='lorekeeper <command> [args]
+
+  status              install health check
+  add-repo <name>     create notes/<name>/ and docs/<name>/ plus a qmd context
+  note <repo> <slug>  open $EDITOR on a note (creates from template if missing)
+  doc  <repo> <slug>  same, for docs
+  ls [repo]           list notes/docs (optionally scoped to one repo)
+  reindex             force qmd update + embed
+  home                print $LOREKEEPER_HOME
+  help                this message
+'
+
+die() { printf "xx %s\n" "$*" >&2; exit 1; }
+
+cmd="${1:-help}"
+shift || true
+
+# Locate the installed template so `note` / `doc` can seed new files.
+# install.sh runs from the repo root; we stash a breadcrumb there.
+TEMPLATE_NOTE="$LOREKEEPER_HOME/.template-note.md"
+
+ensure_template() {
+  if [[ ! -f "$TEMPLATE_NOTE" ]]; then
+    cat > "$TEMPLATE_NOTE" <<'TPL'
+---
+repo: __REPO__
+topic: __SLUG__
+date: __DATE__
+tags: []
+---
+
+# __TITLE__
+
+## context
+<when/why this came up — 1-3 sentences>
+
+## what i learned
+<the actual content — bullets for gotchas, code refs as file:line>
+
+## see also
+<relative links or qmd:// refs>
+TPL
+  fi
+}
+
+open_editor() {
+  local f="$1"
+  "${EDITOR:-${VISUAL:-vi}}" "$f"
+}
+
+open_file() {
+  local kind="$1" repo="$2" slug="$3"
+  [[ -n "$repo" ]] || die "repo name required"
+  [[ -n "$slug" ]] || die "slug required"
+  local dir="$LOREKEEPER_HOME/$kind/$repo"
+  mkdir -p "$dir"
+  local file="$dir/$slug.md"
+  if [[ ! -f "$file" ]]; then
+    ensure_template
+    sed \
+      -e "s|__REPO__|$repo|g" \
+      -e "s|__SLUG__|$slug|g" \
+      -e "s|__DATE__|$(date +%F)|g" \
+      -e "s|__TITLE__|$slug|g" \
+      "$TEMPLATE_NOTE" > "$file"
+  fi
+  open_editor "$file"
+  # Best-effort reindex (foreground, short)
+  ( qmd update && qmd embed ) >/dev/null 2>&1 || true
+}
+
+case "$cmd" in
+  home) echo "$LOREKEEPER_HOME" ;;
+
+  help|-h|--help) printf '%s' "$USAGE" ;;
+
+  status)
+    printf "home:        %s\n" "$LOREKEEPER_HOME"
+    printf "qmd:         "
+    if command -v qmd >/dev/null; then printf "installed (%s)\n" "$(qmd --version 2>/dev/null || echo 'unknown')"
+    else printf "NOT FOUND\n"; fi
+    printf "collections: "
+    qmd collection list 2>/dev/null | grep -E "lorekeeper-(notes|docs)" || echo "(none registered)"
+    printf "\nhooks:\n"
+    for h in lorekeeper-prime.sh lorekeeper-reindex.sh; do
+      if [[ -x "$CLAUDE_DIR/hooks/$h" ]]; then printf "  %s\n" "$h ✓"
+      else printf "  %s\n" "$h MISSING"; fi
+    done
+    printf "\nCLAUDE.md policy block: "
+    if grep -qF "<!-- LOREKEEPER:START -->" "$CLAUDE_DIR/CLAUDE.md" 2>/dev/null; then
+      echo "present"
+    else
+      echo "MISSING"
+    fi
+    printf "caveman:     "
+    if command -v claude >/dev/null && claude plugin list 2>/dev/null | grep -qi caveman; then
+      echo "active"
+    else
+      echo "not installed"
+    fi
+    ;;
+
+  add-repo)
+    name="${1:-}"; [[ -n "$name" ]] || die "usage: lorekeeper add-repo <name>"
+    mkdir -p "$LOREKEEPER_HOME/notes/$name" "$LOREKEEPER_HOME/docs/$name"
+    qmd context add "qmd://lorekeeper-notes/$name" "Memory for repo '$name'" 2>/dev/null || true
+    qmd context add "qmd://lorekeeper-docs/$name"  "Reference docs for repo '$name'" 2>/dev/null || true
+    echo "registered '$name'"
+    ;;
+
+  note) open_file notes "${1:-}" "${2:-}" ;;
+  doc)  open_file docs  "${1:-}" "${2:-}" ;;
+
+  ls)
+    repo="${1:-}"
+    if [[ -n "$repo" ]]; then
+      for kind in notes docs; do
+        d="$LOREKEEPER_HOME/$kind/$repo"
+        [[ -d "$d" ]] || continue
+        printf "\n== %s/%s ==\n" "$kind" "$repo"
+        find "$d" -type f -name '*.md' 2>/dev/null | sed "s|^$d/|  |" | sort
+      done
+    else
+      for kind in notes docs; do
+        printf "\n== %s ==\n" "$kind"
+        if [[ -d "$LOREKEEPER_HOME/$kind" ]]; then
+          for r in "$LOREKEEPER_HOME/$kind"/*/; do
+            [[ -d "$r" ]] || continue
+            repo="$(basename "$r")"
+            count="$(find "$r" -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
+            printf "  %-30s %s file(s)\n" "$repo" "$count"
+          done
+        fi
+      done
+    fi
+    ;;
+
+  reindex)
+    qmd update && qmd embed
+    ;;
+
+  *) die "unknown command: $cmd  (try: lorekeeper help)" ;;
+esac
