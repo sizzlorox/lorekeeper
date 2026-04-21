@@ -17,22 +17,27 @@ $XDG_DATA_HOME/lorekeeper/
 
 ## Requirements
 
+**All platforms**
+
 - Claude Code CLI (≥ 2.1)
 - Node.js ≥ 22
-- `jq` (for settings.json merging)
 - `git`
 - Optional: [caveman](https://github.com/JuliusBrussee/caveman) plugin for token reduction
+
+**Linux/macOS only**
+
+- `jq` (for `settings.json` merging in the bash installer)
 
 qmd is installed by the installer if missing.
 
 ## Install
 
+### Linux / macOS
+
 ```bash
 git clone https://github.com/<you>/lorekeeper ~/.local/share/lorekeeper
 ~/.local/share/lorekeeper/install.sh
 ```
-
-The installer is idempotent — re-run it after pulling updates.
 
 Optional flags:
 
@@ -41,6 +46,38 @@ Optional flags:
 ./install.sh --lorekeeper-home PATH # override data dir (default: $XDG_DATA_HOME/lorekeeper)
 ./install.sh --no-embed-bootstrap   # skip initial qmd embed (faster install, do it later)
 ```
+
+### Windows
+
+Use the native PowerShell installer — no bash, no `jq` needed. Works in PowerShell 5.1 (built into Windows) or PowerShell 7+.
+
+**Extra prerequisite:** [Git for Windows](https://git-scm.com/download/win). `qmd` ships its npm entrypoint as a POSIX shell script, so it needs `sh.exe` — Git for Windows provides one at `C:\Program Files\Git\bin\sh.exe`. The installer locates it automatically (or honors `$env:LOREKEEPER_SH`) and rewrites qmd's broken npm shims (`qmd.ps1` / `qmd.cmd`) to call it directly. If you re-install qmd via `npm` later, re-run `install.ps1` to repatch the shims.
+
+```powershell
+git clone https://github.com/<you>/lorekeeper "$env:LOCALAPPDATA\lorekeeper"
+powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\lorekeeper\install.ps1"
+```
+
+Flags mirror the bash installer:
+
+```powershell
+.\install.ps1 -WithCaveman
+.\install.ps1 -LorekeeperHome C:\path\to\data
+.\install.ps1 -NoEmbedBootstrap
+```
+
+Defaults on Windows:
+
+| item              | path                                           |
+| ----------------- | ---------------------------------------------- |
+| data home         | `%LOCALAPPDATA%\lorekeeper`                    |
+| claude config     | `%USERPROFILE%\.claude`                        |
+| CLI (`lorekeeper.cmd`) | `%LOCALAPPDATA%\lorekeeper\bin`           |
+| hook scripts      | `%USERPROFILE%\.claude\hooks\lorekeeper-*.ps1` |
+
+The CLI directory is added to your user PATH automatically; open a new PowerShell window so the update takes effect. `uninstall.ps1` strips it back out. Running `install.sh` from Git Bash/MSYS aborts and points you at `install.ps1`.
+
+The installer is idempotent on either platform — re-run after pulling updates.
 
 ## After install
 
@@ -85,11 +122,19 @@ If you don't want caveman, pass `--no-caveman` and the installer uses the uncomp
 
 ## Uninstall
 
+Linux/macOS:
+
 ```bash
 ~/.local/share/lorekeeper/uninstall.sh
 ```
 
-Removes the hooks, the CLAUDE.md block, and the qmd collections. Your actual notes/docs are left in place — delete `$LOREKEEPER_HOME` by hand if you want them gone.
+Windows:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\lorekeeper\uninstall.ps1"
+```
+
+Removes the hooks, the CLAUDE.md block, and the qmd collections. Your actual notes/docs are left in place — delete `$LOREKEEPER_HOME` (Linux/macOS) or `%LOCALAPPDATA%\lorekeeper` (Windows) by hand if you want them gone.
 
 ## How the pieces wire together
 

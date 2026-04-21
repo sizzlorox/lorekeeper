@@ -33,6 +33,27 @@ say()  { printf "\033[1;34m==>\033[0m %s\n" "$*"; }
 warn() { printf "\033[1;33m!!\033[0m %s\n" "$*" >&2; }
 die()  { printf "\033[1;31mxx\033[0m %s\n" "$*" >&2; exit 1; }
 
+# --- OS detect: Windows (Git Bash / MSYS / Cygwin) must use install.ps1 ---
+case "${OSTYPE:-}" in
+  msys*|cygwin*|win32)
+    warn "Windows environment detected ($OSTYPE)."
+    warn "Use the native PowerShell installer instead:"
+    warn "  powershell -ExecutionPolicy Bypass -File \"$SCRIPT_DIR/install.ps1\""
+    die  "aborting — install.sh is for Linux/macOS only."
+    ;;
+esac
+# Also catch when $OSTYPE is unset but uname reports MINGW/MSYS
+if command -v uname >/dev/null 2>&1; then
+  case "$(uname -s 2>/dev/null || true)" in
+    MINGW*|MSYS*|CYGWIN*)
+      warn "Windows environment detected ($(uname -s))."
+      warn "Use the native PowerShell installer instead:"
+      warn "  powershell -ExecutionPolicy Bypass -File \"$SCRIPT_DIR/install.ps1\""
+      die  "aborting — install.sh is for Linux/macOS only."
+      ;;
+  esac
+fi
+
 # --- preflight ---
 command -v jq   >/dev/null || die "jq not found. install with: brew install jq  |  apt install jq"
 command -v git  >/dev/null || die "git not found."
