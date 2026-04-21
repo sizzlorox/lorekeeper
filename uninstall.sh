@@ -73,13 +73,20 @@ qmd collection remove lorekeeper-notes 2>/dev/null || true
 qmd collection remove lorekeeper-docs  2>/dev/null || true
 
 # --- CLI + state ---
+# Capture the recorded home before we delete its breadcrumb, so the farewell
+# message can point at the actual directory. Also sidesteps SC2016 by using
+# an escaped literal '\$LOREKEEPER_HOME' in the fallback text.
+home_file="$CLAUDE_DIR/.lorekeeper-home"
+saved_home=""
+[[ -f "$home_file" ]] && saved_home="$(cat "$home_file" 2>/dev/null)"
+
 rm -f "$BIN_DIR/lorekeeper"
-rm -f "$CLAUDE_DIR/.lorekeeper-home"
+rm -f "$home_file"
 
 cat <<EOF
 
 uninstalled. your notes and docs are still at:
-  $(cat "$CLAUDE_DIR/.lorekeeper-home" 2>/dev/null || echo '  (see $LOREKEEPER_HOME or ~/.local/share/lorekeeper)')
+  ${saved_home:-(see \$LOREKEEPER_HOME or ~/.local/share/lorekeeper)}
 
 delete them by hand if you want them gone.
 EOF

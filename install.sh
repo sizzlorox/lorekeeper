@@ -185,8 +185,12 @@ if grep -qF "$START" "$CLAUDE_MD"; then
   ' "$CLAUDE_MD" > "$CLAUDE_MD.tmp"
   mv "$CLAUDE_MD.tmp" "$CLAUDE_MD"
 else
+  # Capture size before the redirection block so shellcheck does not flag
+  # reading and writing the same file in one pipeline (SC2094).
+  sep_needed=0
+  [[ -s "$CLAUDE_MD" ]] && sep_needed=1
   {
-    [[ -s "$CLAUDE_MD" ]] && echo
+    [[ $sep_needed -eq 1 ]] && echo
     echo "$START"
     cat "$BLOCK_FILE"
     echo "$END"

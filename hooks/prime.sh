@@ -80,15 +80,24 @@ Pull only what the current task needs — don't bulk-load.
 
 EOF
 
+# Use a printf loop instead of `echo | sed "s|^|...|"` so shellcheck doesn't
+# complain about SC2001 (parameter expansion is clearer for a per-line prefix).
+emit_listing() {
+  local kind="$1" list="$2"
+  while IFS= read -r line; do
+    printf '  %s/%s/%s\n' "$kind" "$repo" "$line"
+  done <<<"$list"
+}
+
 if [[ -n "$notes_files" ]]; then
   echo "### notes ($(echo "$notes_files" | wc -l | tr -d ' ') files):"
-  echo "$notes_files" | sed "s|^|  notes/$repo/|"
+  emit_listing notes "$notes_files"
   echo
 fi
 
 if [[ -n "$docs_files" ]]; then
   echo "### docs ($(echo "$docs_files" | wc -l | tr -d ' ') files):"
-  echo "$docs_files" | sed "s|^|  docs/$repo/|"
+  emit_listing docs "$docs_files"
   echo
 fi
 
