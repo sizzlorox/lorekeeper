@@ -91,10 +91,16 @@ case "$cmd" in
     printf "collections: "
     qmd collection list 2>/dev/null | grep -E "lorekeeper-(notes|docs)" || echo "(none registered)"
     printf "\nhooks:\n"
-    for h in lorekeeper-prime.sh lorekeeper-reindex.sh; do
+    for h in lorekeeper-prime.sh lorekeeper-reindex.sh lorekeeper-autonote.sh; do
       if [[ -x "$CLAUDE_DIR/hooks/$h" ]]; then printf "  %s\n" "$h ✓"
       else printf "  %s\n" "$h MISSING"; fi
     done
+    printf "\nautonote: "
+    if [[ -e "$LOREKEEPER_HOME/.autonote-off" ]] || [[ "${LOREKEEPER_AUTONOTE:-on}" == "off" ]]; then
+      echo "disabled"
+    else
+      echo "enabled"
+    fi
     printf "\nCLAUDE.md policy block: "
     if grep -qF "<!-- LOREKEEPER:START -->" "$CLAUDE_DIR/CLAUDE.md" 2>/dev/null; then
       echo "present"

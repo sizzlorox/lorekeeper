@@ -32,7 +32,9 @@ fi
 
 # --- remove hook files ---
 say "removing hook scripts"
-rm -f "$CLAUDE_DIR/hooks/lorekeeper-prime.sh" "$CLAUDE_DIR/hooks/lorekeeper-reindex.sh"
+rm -f "$CLAUDE_DIR/hooks/lorekeeper-prime.sh" \
+      "$CLAUDE_DIR/hooks/lorekeeper-reindex.sh" \
+      "$CLAUDE_DIR/hooks/lorekeeper-autonote.sh"
 
 # --- scrub settings.json ---
 SETTINGS="$CLAUDE_DIR/settings.json"
@@ -42,13 +44,14 @@ if [[ -f "$SETTINGS" ]]; then
   jq '
     def scrub:
       map(
-        .hooks |= (map(select((.command | tostring) | test("lorekeeper-(prime|reindex)\\.sh") | not)))
+        .hooks |= (map(select((.command | tostring) | test("lorekeeper-(prime|reindex|autonote)\\.sh") | not)))
       )
       | map(select((.hooks // []) | length > 0));
     if .hooks then
       .hooks.SessionStart      = ((.hooks.SessionStart      // []) | scrub) |
       .hooks.UserPromptSubmit  = ((.hooks.UserPromptSubmit  // []) | scrub) |
-      .hooks.PostToolUse       = ((.hooks.PostToolUse       // []) | scrub)
+      .hooks.PostToolUse       = ((.hooks.PostToolUse       // []) | scrub) |
+      .hooks.SessionEnd        = ((.hooks.SessionEnd        // []) | scrub)
     else . end
   ' "$SETTINGS" > "$TMP"
   mv "$TMP" "$SETTINGS"

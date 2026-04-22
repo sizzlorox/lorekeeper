@@ -128,8 +128,9 @@ Write-Utf8NoBom (Join-Path $ClaudeDir '.lorekeeper-home') $LorekeeperHome
 
 # --- copy hooks ---
 Say "installing hooks to $ClaudeDir\hooks"
-Copy-Item -Force (Join-Path $ScriptDir 'hooks\prime.ps1')   (Join-Path $ClaudeDir 'hooks\lorekeeper-prime.ps1')
-Copy-Item -Force (Join-Path $ScriptDir 'hooks\reindex.ps1') (Join-Path $ClaudeDir 'hooks\lorekeeper-reindex.ps1')
+Copy-Item -Force (Join-Path $ScriptDir 'hooks\prime.ps1')    (Join-Path $ClaudeDir 'hooks\lorekeeper-prime.ps1')
+Copy-Item -Force (Join-Path $ScriptDir 'hooks\reindex.ps1')  (Join-Path $ClaudeDir 'hooks\lorekeeper-reindex.ps1')
+Copy-Item -Force (Join-Path $ScriptDir 'hooks\autonote.ps1') (Join-Path $ClaudeDir 'hooks\lorekeeper-autonote.ps1')
 
 # --- install bin ---
 $BinDir = if ($env:LOREKEEPER_BIN) { $env:LOREKEEPER_BIN } else { Join-Path $env:LOCALAPPDATA 'lorekeeper\bin' }
@@ -165,8 +166,9 @@ if (-not $json.PSObject.Properties['hooks']) {
   $json | Add-Member -NotePropertyName hooks -NotePropertyValue ([pscustomobject]@{})
 }
 
-$primeCmd   = "powershell -NoProfile -ExecutionPolicy Bypass -File `"$ClaudeDir\hooks\lorekeeper-prime.ps1`""
-$reindexCmd = "powershell -NoProfile -ExecutionPolicy Bypass -File `"$ClaudeDir\hooks\lorekeeper-reindex.ps1`""
+$primeCmd    = "powershell -NoProfile -ExecutionPolicy Bypass -File `"$ClaudeDir\hooks\lorekeeper-prime.ps1`""
+$reindexCmd  = "powershell -NoProfile -ExecutionPolicy Bypass -File `"$ClaudeDir\hooks\lorekeeper-reindex.ps1`""
+$autonoteCmd = "powershell -NoProfile -ExecutionPolicy Bypass -File `"$ClaudeDir\hooks\lorekeeper-autonote.ps1`""
 
 function Ensure-HookEntry {
   param($Root, [string]$Event, [string]$Cmd, [string]$Matcher)
@@ -187,9 +189,10 @@ function Ensure-HookEntry {
   $Root.hooks | Add-Member -NotePropertyName $Event -NotePropertyValue $filtered -Force
 }
 
-Ensure-HookEntry -Root $json -Event 'SessionStart'     -Cmd $primeCmd   -Matcher $null
-Ensure-HookEntry -Root $json -Event 'UserPromptSubmit' -Cmd $primeCmd   -Matcher $null
-Ensure-HookEntry -Root $json -Event 'PostToolUse'      -Cmd $reindexCmd -Matcher 'Write|Edit'
+Ensure-HookEntry -Root $json -Event 'SessionStart'     -Cmd $primeCmd    -Matcher $null
+Ensure-HookEntry -Root $json -Event 'UserPromptSubmit' -Cmd $primeCmd    -Matcher $null
+Ensure-HookEntry -Root $json -Event 'PostToolUse'      -Cmd $reindexCmd  -Matcher 'Write|Edit'
+Ensure-HookEntry -Root $json -Event 'SessionEnd'       -Cmd $autonoteCmd -Matcher $null
 
 Write-Utf8NoBom $Settings ($json | ConvertTo-Json -Depth 20)
 
@@ -234,7 +237,7 @@ Write-Host ''
 Write-Host 'installed.' -ForegroundColor Green
 Write-Host ''
 Write-Host "  home:     $LorekeeperHome"
-Write-Host "  hooks:    $ClaudeDir\hooks\lorekeeper-{prime,reindex}.ps1"
+Write-Host "  hooks:    $ClaudeDir\hooks\lorekeeper-{prime,reindex,autonote}.ps1"
 Write-Host "  policy:   $ClaudeMd ($TemplateKey)"
 Write-Host "  caveman:  $cavemanLabel"
 Write-Host ''

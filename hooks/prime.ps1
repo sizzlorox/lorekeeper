@@ -63,14 +63,8 @@ $notesFiles = @(Get-MdList -Dir $notesDir)
 $docsFiles  = @(Get-MdList -Dir $docsDir)
 
 if ($notesFiles.Count -eq 0 -and $docsFiles.Count -eq 0) {
-  Write-Output "## lorekeeper: repo '$repo'"
-  Write-Output ''
-  Write-Output 'No prior notes or docs exist for this repo. If this session produces'
-  Write-Output 'something worth remembering — non-obvious behavior, a debugging dead-end,'
-  Write-Output 'an architectural decision, a non-standard config location — create a note'
-  Write-Output "at ``$LorekeeperHome\notes\$repo\<kebab-slug>.md``."
-  Write-Output ''
-  Write-Output 'See the lorekeeper policy block in CLAUDE.md for the write rules.'
+  # No memory yet — stay silent. The SessionEnd autonote hook captures
+  # learnings without prompting Claude mid-session.
   exit 0
 }
 

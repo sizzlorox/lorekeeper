@@ -13,20 +13,13 @@ Before non-trivial task in git repo:
 2. Relevant files listed → `mcp__qmd__query` with `collections: ["lorekeeper-notes", "lorekeeper-docs"]`. Semantic search.
 3. `mcp__qmd__get` specific files only. No bulk load.
 
-### write — create note when
+### write
 
-- Debug dead-end >15 min, answer non-obvious
-- Library/API/system behaved non-obviously, required digging
-- Architectural/design decision made — record decision AND reasoning
-- Config/env/secret in non-obvious location
-- Team convention not documented in repo
-- Recurring incident pattern with known fix
+Notes autogenerate. `SessionEnd` hook classifies finished session, writes note
+if non-obvious. No mid-session decision needed.
 
-### write — do NOT create note for
-
-- Session summaries. Memory ≠ journal.
-- Already in README/CONTRIBUTING/comments/docstrings. Link, don't restate.
-- Trivia faster to re-derive than retrieve.
+Write inline only when user explicitly asks ("remember X", "note this"). Use
+format below.
 
 ### note format
 
@@ -68,9 +61,9 @@ Notes = scratch. Docs = polished.
 
 ### mechanics
 
+- SessionEnd autonote: heuristic gate → Haiku classify → Sonnet draft. Disable
+  via `touch __LOREKEEPER_HOME__/.autonote-off` or `LOREKEEPER_AUTONOTE=off`.
 - No manual `qmd update` or `qmd embed`. PostToolUse hook auto-reindex.
-- First write to `notes/<repo>/` or `docs/<repo>/` auto-registers generic qmd
-  context (`"Memory for repo '<repo>'"`). After ~3+ notes, replace with real
-  blurb via Bash: `qmd context add qmd://lorekeeper-notes/<repo> "<summary>"`.
-  Overwrites. Same for `lorekeeper-docs/<repo>` if polished docs exist.
-- User says "don't write notes" → skip write policy for session.
+- First write auto-registers generic qmd context. Replace later via
+  `qmd context add qmd://lorekeeper-notes/<repo> "<summary>"`.
+- User says "don't write notes" → honor for session.

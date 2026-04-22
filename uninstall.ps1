@@ -24,7 +24,8 @@ function Write-Utf8NoBom([string]$Path, [string]$Content) {
 Say 'removing hook scripts'
 Remove-Item -Force -ErrorAction SilentlyContinue `
   (Join-Path $ClaudeDir 'hooks\lorekeeper-prime.ps1'), `
-  (Join-Path $ClaudeDir 'hooks\lorekeeper-reindex.ps1')
+  (Join-Path $ClaudeDir 'hooks\lorekeeper-reindex.ps1'), `
+  (Join-Path $ClaudeDir 'hooks\lorekeeper-autonote.ps1')
 
 # --- scrub settings.json ---
 $Settings = Join-Path $ClaudeDir 'settings.json'
@@ -32,14 +33,14 @@ if (Test-Path $Settings) {
   Say "scrubbing hook entries from $Settings"
   $json = Get-Content -Raw $Settings | ConvertFrom-Json
   if ($json -and $json.PSObject.Properties['hooks']) {
-    foreach ($evt in 'SessionStart','UserPromptSubmit','PostToolUse') {
+    foreach ($evt in 'SessionStart','UserPromptSubmit','PostToolUse','SessionEnd') {
       if ($json.hooks.PSObject.Properties[$evt]) {
         $entries = @($json.hooks.$evt)
         $kept = @()
         foreach ($e in $entries) {
           if ($e -and $e.hooks) {
             $filteredHooks = @($e.hooks | Where-Object {
-              ($_.command -as [string]) -notmatch 'lorekeeper-(prime|reindex)\.ps1'
+              ($_.command -as [string]) -notmatch 'lorekeeper-(prime|reindex|autonote)\.ps1'
             })
             if ($filteredHooks.Count -gt 0) {
               $e.hooks = $filteredHooks

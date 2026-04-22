@@ -18,24 +18,15 @@ Before starting any non-trivial task in a git repo:
 3. Fetch only the specific files you intend to use with `mcp__qmd__get`. Don't
    bulk-load the whole index into context.
 
-### Write policy — when to create a note
+### Write policy
 
-Create or update a note in `lorekeeper-notes` when any of these are true:
+Notes are created **automatically** by a `SessionEnd` hook that classifies the
+finished session and drafts a note if there's something non-obvious worth
+remembering. You do **not** need to decide mid-session whether to write.
 
-- A debugging dead-end cost more than ~15 minutes and the answer wasn't obvious.
-- A library, API, or internal system behaved non-obviously and you had to dig.
-- An architectural or design decision was made — record the decision *and the
-  reasoning*, not just the outcome.
-- A configuration, env variable, or secret lives in a non-obvious location.
-- The team follows a convention that isn't written down elsewhere in the repo.
-- A recurring incident pattern has a known fix worth remembering.
-
-Do NOT create a note for:
-
-- Session summaries ("today we fixed X"). Memory ≠ journal.
-- Things already in the repo's README, CONTRIBUTING, inline comments, or
-  docstrings. If it's already documented, link to the file, don't restate it.
-- Trivia that's faster to re-derive than to retrieve.
+The only time to write a note inline is when the user explicitly asks you to
+("remember that…", "make a note that…", "write this up"). In that case use
+the format below.
 
 ### Note format
 
@@ -78,16 +69,15 @@ polished reference.
 
 ### Mechanics
 
+- A `SessionEnd` hook autonomously classifies finished sessions and writes a
+  note if the session produced something non-obvious. Heuristic gate →
+  Haiku classifier → Sonnet drafter. Disable per-user with
+  `touch __LOREKEEPER_HOME__/.autonote-off` or `LOREKEEPER_AUTONOTE=off`.
 - You do not need to run `qmd update` or `qmd embed` after writing — a
   PostToolUse hook handles that automatically.
-- The first write into `notes/<repo>/` or `docs/<repo>/` also auto-registers
-  generic qmd contexts for that repo (description: `"Memory for repo '<repo>'"`).
-  Once you've written ~3+ notes and have a clearer picture of what's in there,
-  replace the generic description by running this via the Bash tool:
-  ```
-  qmd context add qmd://lorekeeper-notes/<repo> "<one-line summary of what the notes actually cover>"
-  ```
-  `qmd context add` overwrites. Do the same for `lorekeeper-docs/<repo>` if
-  durable docs exist. Skip this on repos with sparse or generic notes.
-- If the user explicitly says "don't write notes" for a session, respect that
-  and skip the write policy entirely for that conversation.
+- The first write into `notes/<repo>/` or `docs/<repo>/` auto-registers
+  generic qmd contexts for that repo. Once several notes exist, the user
+  may replace the description with a real blurb via
+  `qmd context add qmd://lorekeeper-notes/<repo> "<summary>"`.
+- If the user says "don't write notes" for a session, respect that and skip
+  any explicit write request.

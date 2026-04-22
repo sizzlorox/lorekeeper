@@ -58,16 +58,8 @@ notes_files="$(list_md "$notes_dir")"
 docs_files="$(list_md "$docs_dir")"
 
 if [[ -z "$notes_files" && -z "$docs_files" ]]; then
-  cat <<EOF
-## lorekeeper: repo '$repo'
-
-No prior notes or docs exist for this repo. If this session produces
-something worth remembering — non-obvious behavior, a debugging dead-end,
-an architectural decision, a non-standard config location — create a note
-at \`$LOREKEEPER_HOME/notes/$repo/<kebab-slug>.md\`.
-
-See the lorekeeper policy block in CLAUDE.md for the write rules.
-EOF
+  # No memory yet — stay silent. The SessionEnd autonote hook captures
+  # learnings without prompting Claude mid-session.
   exit 0
 fi
 

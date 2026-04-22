@@ -10,9 +10,9 @@ $XDG_DATA_HOME/lorekeeper/
 
 ## What it does
 
-- **Reads automatically.** A `SessionStart` hook injects an index of existing notes/docs for the current repo so Claude knows what memory is available. Claude uses qmd's MCP tools to fetch the specific files the task needs.
-- **Writes selectively.** A strict policy in `CLAUDE.md` tells Claude *when* to create notes (non-obvious behavior, debugging dead-ends, design decisions) and *when not to* (session summaries, re-documentable trivia). Without this, notes collapse into noise within weeks.
-- **Re-indexes itself.** A `PostToolUse` hook runs `qmd update && qmd embed` in the background whenever Claude writes under the notes/docs tree.
+- **Reads automatically.** A `SessionStart` hook injects an index of existing notes/docs for the current repo so Claude knows what memory is available. Claude uses qmd's MCP tools to fetch the specific files the task needs. When the repo has no prior memory, the hook stays silent — no mid-session prompting.
+- **Writes autonomously.** A `SessionEnd` hook runs a two-stage classifier over the finished transcript: a cheap structural gate (tool-call count, error/decision keywords), then a Haiku yes/no on note-worthiness, then a Sonnet drafter that writes the note. No mid-session hinting to Claude, no decision to make inline. Disable with `touch $LOREKEEPER_HOME/.autonote-off` or `LOREKEEPER_AUTONOTE=off`.
+- **Re-indexes itself.** A `PostToolUse` hook runs `qmd update && qmd embed` in the background whenever Claude writes under the notes/docs tree. The autonote hook triggers the same reindex directly after it writes.
 - **Uses caveman if present.** Ships a caveman-compressed `CLAUDE.md` block to cut input tokens on every session, and instructs Claude to write notes in caveman-speak so retrieval is cheap too.
 
 ## Requirements
@@ -81,7 +81,7 @@ The installer is idempotent on either platform — re-run after pulling updates.
 
 ## After install
 
-Start a Claude Code session in any git repo. The first time you use a repo, Claude sees an empty index and is told to write notes when it learns something. After a few sessions you'll have organic coverage; seed it manually for repos you care about:
+Start a Claude Code session in any git repo. Work normally — nothing prompts Claude to take notes mid-session. When the session ends, the autonote hook scores the transcript and writes a note only if something non-obvious came up (debug dead-end, surprising library behavior, architectural decision, config in an odd place). After a few sessions you'll have organic coverage; seed it manually for repos you care about:
 
 ```bash
 # Create a starter note
@@ -94,8 +94,9 @@ Verify everything is wired:
 ```bash
 lorekeeper status
 # qmd: installed
-# collections: lorekeeper-notes (0 docs), lorekeeper-docs (0 docs)
-# hooks: SessionStart ✓  PostToolUse ✓  UserPromptSubmit ✓
+# collections: lorekeeper-notes, lorekeeper-docs
+# hooks: lorekeeper-prime ✓  lorekeeper-reindex ✓  lorekeeper-autonote ✓
+# autonote: enabled
 # caveman: detected (compressed CLAUDE.md in use)
 ```
 
@@ -145,20 +146,31 @@ Claude Code session starts
 SessionStart hook ─► reads git toplevel ─► ls $LOREKEEPER_HOME/{notes,docs}/<repo>
     │                                          │
     │                                          ▼
-    │                           injects index as context → Claude sees what memory exists
+    │               if memory exists: injects index → Claude queries via qmd MCP
+    │               if empty:         stays silent  → no hint, no noise
+    ▼
+Claude works normally
     │
     ▼
-Claude works, uses qmd MCP tools (query/get) to read specific notes
+Session ends → SessionEnd hook fires (detached)
     │
-    ▼
-Claude writes a new note with Write tool → PostToolUse hook fires
-    │
-    ▼
-Hook matches path under $LOREKEEPER_HOME → backgrounds `qmd update && qmd embed`
-    │
-    ▼
-Next session: new note is searchable via MCP immediately
+    ├─► structural gate  (≥10 tool calls AND error/decision/surprise keywords?)
+    │       │ no → skip
+    │       ▼ yes
+    ├─► Haiku classifier  ("is this session note-worthy? yes/no")
+    │       │ no → skip
+    │       ▼ yes
+    └─► Sonnet drafter    → writes $LOREKEEPER_HOME/notes/<repo>/<slug>.md
+                          → runs `qmd update && qmd embed`
+                          → logs to $LOREKEEPER_HOME/.autonote.log
+
+Next session: the new note is searchable via MCP immediately.
 ```
+
+### Turning autonote off
+
+- Per-install: `touch $LOREKEEPER_HOME/.autonote-off`  (Windows: create `%LOCALAPPDATA%\lorekeeper\.autonote-off`)
+- Per-session: `export LOREKEEPER_AUTONOTE=off` before launching `claude`
 
 ## License
 

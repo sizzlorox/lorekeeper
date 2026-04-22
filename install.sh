@@ -101,8 +101,9 @@ echo "$LOREKEEPER_HOME" > "$CLAUDE_DIR/.lorekeeper-home"
 
 # --- copy hooks ---
 say "installing hooks to $CLAUDE_DIR/hooks"
-install -m 0755 "$SCRIPT_DIR/hooks/prime.sh"   "$CLAUDE_DIR/hooks/lorekeeper-prime.sh"
-install -m 0755 "$SCRIPT_DIR/hooks/reindex.sh" "$CLAUDE_DIR/hooks/lorekeeper-reindex.sh"
+install -m 0755 "$SCRIPT_DIR/hooks/prime.sh"    "$CLAUDE_DIR/hooks/lorekeeper-prime.sh"
+install -m 0755 "$SCRIPT_DIR/hooks/reindex.sh"  "$CLAUDE_DIR/hooks/lorekeeper-reindex.sh"
+install -m 0755 "$SCRIPT_DIR/hooks/autonote.sh" "$CLAUDE_DIR/hooks/lorekeeper-autonote.sh"
 
 # --- install bin ---
 BIN_DIR="${LOREKEEPER_BIN:-$HOME/.local/bin}"
@@ -122,8 +123,9 @@ say "merging hook config into $SETTINGS"
 
 # Build the hooks fragment — single jq expression keeps things atomic
 TMP="$(mktemp)"
-jq --arg prime   "bash $CLAUDE_DIR/hooks/lorekeeper-prime.sh" \
-   --arg reindex "bash $CLAUDE_DIR/hooks/lorekeeper-reindex.sh" '
+jq --arg prime    "bash $CLAUDE_DIR/hooks/lorekeeper-prime.sh" \
+   --arg reindex  "bash $CLAUDE_DIR/hooks/lorekeeper-reindex.sh" \
+   --arg autonote "bash $CLAUDE_DIR/hooks/lorekeeper-autonote.sh" '
    .hooks = (.hooks // {}) |
    .hooks.SessionStart = (
      (.hooks.SessionStart // [])
@@ -145,6 +147,13 @@ jq --arg prime   "bash $CLAUDE_DIR/hooks/lorekeeper-prime.sh" \
          (.hooks // []) | map(.command) | any(. == $reindex) | not
        ))
      | . + [ { "matcher": "Write|Edit", "hooks": [ { "type": "command", "command": $reindex } ] } ]
+   ) |
+   .hooks.SessionEnd = (
+     (.hooks.SessionEnd // [])
+     | map(select(
+         (.hooks // []) | map(.command) | any(. == $autonote) | not
+       ))
+     | . + [ { "hooks": [ { "type": "command", "command": $autonote } ] } ]
    )
 ' "$SETTINGS" > "$TMP"
 mv "$TMP" "$SETTINGS"
@@ -212,7 +221,7 @@ cat <<EOF
 $(tput bold 2>/dev/null)installed.$(tput sgr0 2>/dev/null)
 
   home:      $LOREKEEPER_HOME
-  hooks:     $CLAUDE_DIR/hooks/{lorekeeper-prime,lorekeeper-reindex}.sh
+  hooks:     $CLAUDE_DIR/hooks/{lorekeeper-prime,lorekeeper-reindex,lorekeeper-autonote}.sh
   policy:    $CLAUDE_MD ($TEMPLATE_KEY)
   caveman:   $($CAVEMAN_ACTIVE && echo 'active' || echo 'off')
 

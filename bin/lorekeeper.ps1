@@ -108,10 +108,12 @@ switch ($cmd) {
     } else { Write-Output '  (none registered)' }
     Write-Output ''
     Write-Output 'hooks:'
-    foreach ($h in 'lorekeeper-prime.ps1','lorekeeper-reindex.ps1') {
+    foreach ($h in 'lorekeeper-prime.ps1','lorekeeper-reindex.ps1','lorekeeper-autonote.ps1') {
       $p = Join-Path $ClaudeDir "hooks\$h"
       if (Test-Path $p) { Write-Output "  $h OK" } else { Write-Output "  $h MISSING" }
     }
+    $autonoteOff = (Test-Path (Join-Path $LorekeeperHome '.autonote-off')) -or ($env:LOREKEEPER_AUTONOTE -eq 'off')
+    Write-Output ("autonote:    " + $(if ($autonoteOff) { 'disabled' } else { 'enabled' }))
     Write-Output ''
     $claudeMd = Join-Path $ClaudeDir 'CLAUDE.md'
     $blockOk  = $false
