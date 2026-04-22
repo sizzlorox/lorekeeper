@@ -15,11 +15,14 @@ Before non-trivial task in git repo:
 
 ### write
 
-Notes autogenerate. `SessionEnd` hook classifies finished session, writes note
-if non-obvious. No mid-session decision needed.
+SessionEnd hook auto-classifies finished session. Routes:
+- `note`        → `notes/<repo>/<slug>.md` (scratch gotcha/decision)
+- `feature-doc` → `docs/<repo>/<slug>.md`  (completed feature)
+- `adr`         → `docs/<repo>/adr/ADR-NNNN-<slug>.md` (decision record)
 
-Write inline only when user explicitly asks ("remember X", "note this"). Use
-format below.
+No mid-session decision needed. Write inline only on explicit user request
+("remember X", "document Y feature", "record this decision"). Use format
+below for notes; for feature docs and ADRs read an existing neighbor first.
 
 ### note format
 

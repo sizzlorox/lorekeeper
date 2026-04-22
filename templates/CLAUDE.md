@@ -20,13 +20,18 @@ Before starting any non-trivial task in a git repo:
 
 ### Write policy
 
-Notes are created **automatically** by a `SessionEnd` hook that classifies the
-finished session and drafts a note if there's something non-obvious worth
-remembering. You do **not** need to decide mid-session whether to write.
+A `SessionEnd` hook classifies each finished session and autonomously writes
+one of:
 
-The only time to write a note inline is when the user explicitly asks you to
-("remember that…", "make a note that…", "write this up"). In that case use
-the format below.
+- `notes/<repo>/<slug>.md` — scratch memory for a non-obvious learning
+- `docs/<repo>/<slug>.md` — feature documentation (overview, how it works, config, usage)
+- `docs/<repo>/adr/ADR-NNNN-<slug>.md` — architecture decision record
+
+You do not decide mid-session whether to write. The only time to write inline
+is when the user explicitly asks you ("remember that…", "write up the …
+feature", "record this decision"). Use the note format below for quick
+memories; for feature docs and ADRs, read an existing neighbor under
+`__LOREKEEPER_HOME__/docs/<repo>/` first to match style.
 
 ### Note format
 

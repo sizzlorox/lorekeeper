@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# lorekeeper: SessionEnd hook — autonomous note extraction.
-# Gates cheaply, then asks Haiku if the session was note-worthy, then asks
-# Sonnet to draft the note. Runs detached so SessionEnd returns fast.
+# lorekeeper: SessionEnd hook — autonomous extraction.
+# Structural gate -> Haiku 4-way classifier -> Sonnet drafter routes to
+# notes/, docs/<feature>.md, or docs/adr/ADR-NNNN-<slug>.md.
 
 set -e
 
@@ -45,12 +45,11 @@ find "$seen_dir" -type f -mtime +30 -delete 2>/dev/null || true
   [[ "$tool_count" -lt 10 ]] && exit 0
 
   # --- signal gate ---
-  if ! grep -qiE "(error|exception|failed|traceback|turns out|instead|because|decided|doesn.t work|won.t work|gotcha|workaround|non.obvious|unexpected|surprise)" "$transcript_path"; then
+  if ! grep -qiE "(error|exception|failed|traceback|turns out|instead|because|decided|doesn.t work|won.t work|gotcha|workaround|non.obvious|unexpected|surprise|shipped|done|finished|works now|ready|implemented|built)" "$transcript_path"; then
     exit 0
   fi
 
   # --- condense transcript ---
-  # Keep user/assistant text + tool names. Drop tool results (noisy, large).
   condensed="$(mktemp)"
   trap 'rm -f "$condensed"' EXIT
 
@@ -72,19 +71,15 @@ find "$seen_dir" -type f -mtime +30 -delete 2>/dev/null || true
 
   [[ ! -s "$condensed" ]] && exit 0
 
-  # --- Haiku gate ---
-  gate_prompt='You classify Claude Code session transcripts for NOTE-WORTHINESS.
+  # --- Haiku classifier ---
+  gate_prompt='You classify finished Claude Code sessions. Reply with EXACTLY ONE WORD on line 1: none, note, feature-doc, or adr.
 
-Note-worthy = the session produced non-obvious knowledge a future session would benefit from:
-- a debugging dead-end that cost >15 min with a non-obvious fix
-- a library/API/system that behaved unexpectedly and required digging
-- an architectural decision with reasoning
-- a config/env var/secret in a non-obvious location
-- an undocumented team convention
+- note: scratch memory for a SINGLE non-obvious learning — debug dead-end + fix, library/API quirk, config in an odd place, undocumented convention. Not ongoing.
+- feature-doc: the session BUILT or substantially modified a nameable feature/subsystem future teammates would need onboarding docs for. Strong signal: new files/modules, components wired together, "shipped"/"done"/"works now" language, tests added.
+- adr: an architectural or design DECISION was made with reasoning that will constrain future work. Strong signal: alternatives weighed, tradeoffs discussed, decision rationale articulated.
+- none: nothing worth preserving cross-session (quick lookup, pure formatting, trivial Q&A).
 
-NOT note-worthy: quick lookups, pure codegen, formatting fixes, trivial Q&A, anything already covered by the repo README.
-
-Reply with EXACTLY "yes" or "no" on the first line. Nothing else.
+Default to none unless clear. Between note and feature-doc, prefer note. Return ONE WORD on line 1, nothing else.
 
 TRANSCRIPT:
 '
@@ -92,13 +87,22 @@ TRANSCRIPT:
   gate="$(LOREKEEPER_AUTONOTE_CHILD=1 claude -p "$gate_input" \
       --model claude-haiku-4-5-20251001 \
       --tools "" 2>/dev/null \
-    | awk 'NR==1 {print tolower($1); exit}' | tr -cd 'a-z')"
+    | awk 'NR==1 {gsub(/[[:space:]]/,""); print tolower($0); exit}' | tr -cd 'a-z-')"
 
-  [[ "$gate" != "yes" ]] && exit 0
+  case "$gate" in
+    note)        kind=note ;;
+    feature-doc|featuredoc) kind=feature-doc ;;
+    adr)         kind=adr ;;
+    *)           exit 0 ;;
+  esac
 
-  # --- Sonnet draft ---
   today="$(date +%Y-%m-%d)"
-  draft_prompt="Extract the single most memory-worthy learning from the following Claude Code session as a note. Output ONLY the note contents, no preamble, no code fence. Exact format:
+
+  # --- collect per-kind context + build prompt ---
+  case "$kind" in
+    note)
+      out_dir="$LOREKEEPER_HOME/notes/$repo"
+      draft_prompt="Extract the single most memory-worthy learning from the following Claude Code session as a note. Output ONLY the note contents, no preamble, no code fence. Exact format:
 
 ---
 repo: $repo
@@ -121,11 +125,111 @@ slug: <kebab-case-slug>
 
 Rules:
 - Pick ONE specific learning. Best candidates: debug dead-end + fix, non-obvious API behavior, design decision + reasoning, config in odd location.
-- If NOTHING is truly non-obvious or worth remembering cross-session, output literally: SKIP
-- slug must be filesystem-safe kebab-case, no spaces.
+- If nothing is truly non-obvious, output literally: SKIP
+- slug must be filesystem-safe kebab-case.
 
 TRANSCRIPT:
 "
+      ;;
+
+    feature-doc)
+      out_dir="$LOREKEEPER_HOME/docs/$repo"
+      mkdir -p "$out_dir"
+      # Pull existing feature docs (excluding ADRs) so Sonnet can merge instead
+      # of fork. Cap each to 3KB to keep prompt size sane.
+      existing_context=""
+      while IFS= read -r -d '' f; do
+        bn="$(basename "$f" .md)"
+        existing_context+="### existing doc: $bn
+$(head -c 3000 "$f")
+
+"
+      done < <(find "$out_dir" -maxdepth 1 -type f -name '*.md' -print0 2>/dev/null)
+
+      draft_prompt="Write engineering feature documentation for the work done in this Claude Code session. Output ONLY the doc contents, no preamble, no code fence.
+
+Existing feature docs for this repo are below — if this session EXTENDED one of them, reuse its slug and MERGE (preserve existing prose, add new sections/details, bump 'updated'). If this session built something NEW, pick a fresh slug.
+
+${existing_context:-(no existing feature docs)}
+
+Exact output format:
+
+---
+repo: $repo
+type: feature
+feature: <human-readable name>
+date: <YYYY-MM-DD of first version; reuse from existing if merging, else $today>
+updated: $today
+slug: <kebab-case-slug>
+---
+
+# <Feature Name>
+
+## overview
+<1-2 paragraphs: what it does, who uses it, why it exists>
+
+## how it works
+<entry points, key files, control flow. cite code as \`path:line\`>
+
+## configuration
+<env vars, settings, flags, defaults. omit section if none.>
+
+## usage
+<code examples, CLI invocations, API calls>
+
+## see also
+<related docs, external refs, code paths. omit section if none.>
+
+Rules:
+- If this session did NOT build or substantially modify a nameable feature, output literally: SKIP
+- slug must be filesystem-safe kebab-case and stable across updates.
+- When merging with existing, KEEP content that's still accurate; don't drop sections unless contradicted.
+
+TRANSCRIPT:
+"
+      ;;
+
+    adr)
+      out_dir="$LOREKEEPER_HOME/docs/$repo/adr"
+      mkdir -p "$out_dir"
+      last_num="$(find "$out_dir" -maxdepth 1 -type f -name 'ADR-*.md' 2>/dev/null \
+        | sed -E 's|.*/ADR-0*([0-9]+).*|\1|' | sort -n | tail -1)"
+      next_num="$(( ${last_num:-0} + 1 ))"
+      adr_num="$(printf 'ADR-%04d' "$next_num")"
+
+      draft_prompt="Write an Architecture Decision Record (ADR) for the decision made in this Claude Code session. Output ONLY the ADR contents, no preamble, no code fence. Exact format:
+
+---
+repo: $repo
+type: adr
+number: $adr_num
+date: $today
+status: accepted
+slug: <kebab-case-slug>
+---
+
+# $adr_num: <Title>
+
+## context
+<forces at play, constraints, problem statement. 2-4 sentences.>
+
+## decision
+<what was decided, plainly stated>
+
+## consequences
+<positive outcomes, negative outcomes, tradeoffs. bullets ok.>
+
+## alternatives considered
+<other options evaluated, reasons rejected. bullets ok.>
+
+Rules:
+- If this session did NOT make a real architectural decision with reasoning, output literally: SKIP
+- slug kebab-case, no spaces. Title short (5-10 words).
+
+TRANSCRIPT:
+"
+      ;;
+  esac
 
   draft_input="${draft_prompt}$(cat "$condensed")"
   draft="$(LOREKEEPER_AUTONOTE_CHILD=1 claude -p "$draft_input" \
@@ -136,27 +240,38 @@ TRANSCRIPT:
   first_line="$(printf '%s' "$draft" | head -1 | tr -d '[:space:]')"
   [[ "$first_line" == "SKIP" ]] && exit 0
 
-  # Extract slug from first frontmatter block
   slug="$(printf '%s\n' "$draft" \
     | awk 'BEGIN{fm=0} /^---$/ {fm++; next} fm==1 && /^slug:/ {sub(/^slug:[[:space:]]*/,""); print; exit}' \
     | tr -cd 'A-Za-z0-9_-')"
   [[ -z "$slug" ]] && slug="auto-$(date +%s)"
 
-  notes_dir="$LOREKEEPER_HOME/notes/$repo"
-  mkdir -p "$notes_dir"
-  note_path="$notes_dir/$slug.md"
-  [[ -e "$note_path" ]] && note_path="$notes_dir/$slug-$(date +%s).md"
+  mkdir -p "$out_dir"
 
-  # Drop the slug: line from frontmatter before writing (not part of canonical format).
+  # Per-kind target path + collision handling.
+  case "$kind" in
+    note)
+      out_path="$out_dir/$slug.md"
+      # Notes collide -> timestamp suffix so we don't clobber.
+      [[ -e "$out_path" ]] && out_path="$out_dir/$slug-$(date +%s).md"
+      ;;
+    feature-doc)
+      # Overwrite on slug match — Sonnet was shown existing content and told to merge.
+      out_path="$out_dir/$slug.md"
+      ;;
+    adr)
+      out_path="$out_dir/$adr_num-$slug.md"
+      ;;
+  esac
+
+  # Drop the slug: line from frontmatter before writing.
   printf '%s\n' "$draft" \
     | awk 'BEGIN{fm=0} /^---$/ {fm++; print; next} fm==1 && /^slug:/ {next} {print}' \
-    > "$note_path"
+    > "$out_path"
 
-  # Trigger reindex directly — PostToolUse doesn't fire for non-Claude writes.
   (qmd update && qmd embed) >/dev/null 2>&1 || true
 
   mkdir -p "$(dirname "$LOG")"
-  echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $repo: auto-wrote $note_path (session $session_id)" >> "$LOG"
+  echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $repo [$kind]: $out_path (session $session_id)" >> "$LOG"
 ) >/dev/null 2>&1 </dev/null &
 disown 2>/dev/null || true
 

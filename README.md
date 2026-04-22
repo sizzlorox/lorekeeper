@@ -11,7 +11,12 @@ $XDG_DATA_HOME/lorekeeper/
 ## What it does
 
 - **Reads automatically.** A `SessionStart` hook injects an index of existing notes/docs for the current repo so Claude knows what memory is available. Claude uses qmd's MCP tools to fetch the specific files the task needs. When the repo has no prior memory, the hook stays silent — no mid-session prompting.
-- **Writes autonomously.** A `SessionEnd` hook runs a two-stage classifier over the finished transcript: a cheap structural gate (tool-call count, error/decision keywords), then a Haiku yes/no on note-worthiness, then a Sonnet drafter that writes the note. No mid-session hinting to Claude, no decision to make inline. Disable with `touch $LOREKEEPER_HOME/.autonote-off` or `LOREKEEPER_AUTONOTE=off`.
+- **Writes autonomously.** A `SessionEnd` hook runs a structural gate, then a Haiku 4-way classifier — `none | note | feature-doc | adr` — then Sonnet drafts the right artifact:
+    - `note` → `notes/<repo>/<slug>.md` — one-shot gotcha, decision, or non-obvious behavior
+    - `feature-doc` → `docs/<repo>/<slug>.md` — completed feature doc (overview, how it works, config, usage). Merges in place when slug matches an existing doc.
+    - `adr` → `docs/<repo>/adr/ADR-NNNN-<slug>.md` — architecture decision record with context / decision / consequences / alternatives. Sequential numbering.
+
+  No mid-session hinting to Claude. Disable with `touch $LOREKEEPER_HOME/.autonote-off` or `LOREKEEPER_AUTONOTE=off`.
 - **Re-indexes itself.** A `PostToolUse` hook runs `qmd update && qmd embed` in the background whenever Claude writes under the notes/docs tree. The autonote hook triggers the same reindex directly after it writes.
 - **Uses caveman if present.** Ships a caveman-compressed `CLAUDE.md` block to cut input tokens on every session, and instructs Claude to write notes in caveman-speak so retrieval is cheap too.
 
@@ -154,15 +159,19 @@ Claude works normally
     ▼
 Session ends → SessionEnd hook fires (detached)
     │
-    ├─► structural gate  (≥10 tool calls AND error/decision/surprise keywords?)
+    ├─► structural gate  (≥10 tool calls AND error/decision/shipped keywords?)
     │       │ no → skip
     │       ▼ yes
-    ├─► Haiku classifier  ("is this session note-worthy? yes/no")
-    │       │ no → skip
-    │       ▼ yes
-    └─► Sonnet drafter    → writes $LOREKEEPER_HOME/notes/<repo>/<slug>.md
-                          → runs `qmd update && qmd embed`
-                          → logs to $LOREKEEPER_HOME/.autonote.log
+    ├─► Haiku classifier  ("none | note | feature-doc | adr")
+    │       │ none → skip
+    │       ▼
+    └─► Sonnet drafter (per-kind template)
+            │
+            ├─ note        → notes/<repo>/<slug>.md              (collision → timestamp suffix)
+            ├─ feature-doc → docs/<repo>/<slug>.md               (overwrite = Sonnet-merged)
+            └─ adr         → docs/<repo>/adr/ADR-NNNN-<slug>.md  (monotonic numbering)
+
+        then: qmd update && qmd embed, append $LOREKEEPER_HOME/.autonote.log
 
 Next session: the new note is searchable via MCP immediately.
 ```
