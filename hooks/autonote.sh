@@ -102,12 +102,31 @@ TRANSCRIPT:
   case "$kind" in
     note)
       out_dir="$LOREKEEPER_HOME/notes/$repo"
-      draft_prompt="Extract the single most memory-worthy learning from the following Claude Code session as a note. Output ONLY the note contents, no preamble, no code fence. Exact format:
+      mkdir -p "$out_dir"
+      # Pull existing notes so Sonnet can merge same-topic instead of fork.
+      # Cap each to 3KB to keep prompt size sane.
+      existing_context=""
+      while IFS= read -r -d '' f; do
+        bn="$(basename "$f" .md)"
+        existing_context+="### existing note: $bn
+$(head -c 3000 "$f")
+
+"
+      done < <(find "$out_dir" -maxdepth 1 -type f -name '*.md' -print0 2>/dev/null)
+
+      draft_prompt="Extract the single most memory-worthy learning from the following Claude Code session as a note. Output ONLY the note contents, no preamble, no code fence.
+
+Existing notes for this repo are below — if this session EXTENDS one of them (same topic/subsystem), reuse its slug and MERGE (preserve existing bullets, add new ones, bump 'updated'). If this session surfaced a NEW learning, pick a fresh slug.
+
+${existing_context:-(no existing notes)}
+
+Exact format:
 
 ---
 repo: $repo
 topic: <2-5 words>
-date: $today
+date: <YYYY-MM-DD of first version; reuse from existing if merging, else $today>
+updated: $today
 tags: [<tag>, <tag>]
 slug: <kebab-case-slug>
 ---
@@ -126,7 +145,8 @@ slug: <kebab-case-slug>
 Rules:
 - Pick ONE specific learning. Best candidates: debug dead-end + fix, non-obvious API behavior, design decision + reasoning, config in odd location.
 - If nothing is truly non-obvious, output literally: SKIP
-- slug must be filesystem-safe kebab-case.
+- slug must be filesystem-safe kebab-case, stable across updates.
+- When merging, KEEP existing bullets that are still accurate; don't drop unless contradicted.
 
 TRANSCRIPT:
 "
@@ -250,9 +270,8 @@ TRANSCRIPT:
   # Per-kind target path + collision handling.
   case "$kind" in
     note)
+      # Overwrite on slug match — Sonnet was shown existing content and told to merge.
       out_path="$out_dir/$slug.md"
-      # Notes collide -> timestamp suffix so we don't clobber.
-      [[ -e "$out_path" ]] && out_path="$out_dir/$slug-$(date +%s).md"
       ;;
     feature-doc)
       # Overwrite on slug match — Sonnet was shown existing content and told to merge.

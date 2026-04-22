@@ -12,7 +12,7 @@ $XDG_DATA_HOME/lorekeeper/
 
 - **Reads automatically.** A `SessionStart` hook injects an index of existing notes/docs for the current repo so Claude knows what memory is available. Claude uses qmd's MCP tools to fetch the specific files the task needs. When the repo has no prior memory, the hook stays silent — no mid-session prompting.
 - **Writes autonomously.** A `SessionEnd` hook runs a structural gate, then a Haiku 4-way classifier — `none | note | feature-doc | adr` — then Sonnet drafts the right artifact:
-    - `note` → `notes/<repo>/<slug>.md` — one-shot gotcha, decision, or non-obvious behavior
+    - `note` → `notes/<repo>/<slug>.md` — scratch gotcha, decision, or non-obvious behavior. Merges in place when slug matches an existing note.
     - `feature-doc` → `docs/<repo>/<slug>.md` — completed feature doc (overview, how it works, config, usage). Merges in place when slug matches an existing doc.
     - `adr` → `docs/<repo>/adr/ADR-NNNN-<slug>.md` — architecture decision record with context / decision / consequences / alternatives. Sequential numbering.
 
@@ -172,7 +172,7 @@ Session ends → SessionEnd hook fires (detached)
     │       ▼
     └─► Sonnet drafter (per-kind template)
             │
-            ├─ note        → notes/<repo>/<slug>.md              (collision → timestamp suffix)
+            ├─ note        → notes/<repo>/<slug>.md              (overwrite = Sonnet-merged)
             ├─ feature-doc → docs/<repo>/<slug>.md               (overwrite = Sonnet-merged)
             └─ adr         → docs/<repo>/adr/ADR-NNNN-<slug>.md  (monotonic numbering)
 

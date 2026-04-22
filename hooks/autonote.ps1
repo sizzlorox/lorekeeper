@@ -145,13 +145,35 @@ $adrBase   = Join-Path $docsBase 'adr'
 
 if ($kind -eq 'note') {
   $outDir = $notesBase
+  New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+
+  # Include existing notes (cap each at 3KB) so Sonnet can merge same-topic.
+  $existingCtx = ''
+  if (Test-Path $outDir) {
+    Get-ChildItem -Path $outDir -Filter *.md -File -ErrorAction SilentlyContinue | ForEach-Object {
+      $raw = Get-Content -Raw -LiteralPath $_.FullName -ErrorAction SilentlyContinue
+      if ($raw) {
+        if ($raw.Length -gt 3000) { $raw = $raw.Substring(0, 3000) }
+        $existingCtx += "### existing note: $($_.BaseName)`n$raw`n`n"
+      }
+    }
+  }
+  if (-not $existingCtx) { $existingCtx = '(no existing notes)' }
+
   $draftPrompt = @"
-Extract the single most memory-worthy learning from the following Claude Code session as a note. Output ONLY the note contents, no preamble, no code fence. Exact format:
+Extract the single most memory-worthy learning from the following Claude Code session as a note. Output ONLY the note contents, no preamble, no code fence.
+
+Existing notes for this repo are below — if this session EXTENDS one of them (same topic/subsystem), reuse its slug and MERGE (preserve existing bullets, add new ones, bump 'updated'). If this session surfaced a NEW learning, pick a fresh slug.
+
+$existingCtx
+
+Exact format:
 
 ---
 repo: $Repo
 topic: <2-5 words>
-date: $today
+date: <YYYY-MM-DD of first version; reuse from existing if merging, else $today>
+updated: $today
 tags: [<tag>, <tag>]
 slug: <kebab-case-slug>
 ---
@@ -170,7 +192,8 @@ slug: <kebab-case-slug>
 Rules:
 - Pick ONE specific learning.
 - If nothing is truly non-obvious, output literally: SKIP
-- slug kebab-case, no spaces.
+- slug kebab-case, no spaces, stable across updates.
+- When merging, keep existing bullets that are still accurate; don't drop unless contradicted.
 
 TRANSCRIPT:
 $condensed
@@ -304,11 +327,7 @@ New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 
 # Per-kind target path
 $outPath = switch ($kind) {
-  'note'        {
-    $p = Join-Path $outDir "$slug.md"
-    if (Test-Path $p) { $p = Join-Path $outDir ("$slug-" + (Get-Date -UFormat %s) + '.md') }
-    $p
-  }
+  'note'        { Join-Path $outDir "$slug.md" }   # overwrite on match (merge was Sonnet's job)
   'feature-doc' { Join-Path $outDir "$slug.md" }   # overwrite on match (merge was Sonnet's job)
   'adr'         { Join-Path $outDir ($adrNum + '-' + $slug + '.md') }
 }

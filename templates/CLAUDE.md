@@ -46,7 +46,8 @@ Path: `__LOREKEEPER_HOME__/notes/<repo-name>/<kebab-slug>.md`
 ---
 repo: <repo-name>
 topic: <short topic>
-date: <YYYY-MM-DD>
+date: <YYYY-MM-DD of first version>
+updated: <YYYY-MM-DD>
 tags: [<tag>, <tag>]
 ---
 
