@@ -18,6 +18,10 @@ lorekeeper <command> [args]
   doc  <repo> <slug>  same, for docs
   ls [repo]           list notes/docs (optionally scoped to one repo)
   reindex             force qmd update + embed
+  distill [repo]      synthesize durable docs (architecture/runbook/onboarding/
+                      conventions/api) from notes + codebase. Run from the
+                      repo root; arg defaults to the current git toplevel name.
+                      Uses Sonnet + tools; can take minutes and cost a few $.
   home                print lorekeeper home
   help                this message
 '@
@@ -187,6 +191,74 @@ switch ($cmd) {
   'reindex' {
     & qmd update
     & qmd embed
+    break
+  }
+
+  'distill' {
+    if (-not (Get-Command claude -ErrorAction SilentlyContinue)) { Die 'claude CLI not on PATH' }
+    $here = (Get-Location).Path
+    Push-Location $here
+    try {
+      $top = & git rev-parse --show-toplevel 2>$null
+    } finally { Pop-Location }
+    if ($LASTEXITCODE -ne 0 -or -not $top) { Die 'run this from inside a git worktree' }
+    $topName = Split-Path $top.Trim() -Leaf
+    $repoArg = if ($rest.Count -ge 1) { $rest[0] } else { $topName }
+    if ($topName -ne $repoArg) {
+      Die ("current git toplevel is '$topName', not '$repoArg' - cd into that worktree first")
+    }
+    $repo = $repoArg
+    $notesDir = Join-Path $LorekeeperHome "notes\$repo"
+    $docsDir  = Join-Path $LorekeeperHome "docs\$repo"
+    New-Item -ItemType Directory -Force -Path $docsDir | Out-Null
+
+    Write-Host "==> distilling durable docs for '$repo'" -ForegroundColor Blue
+    Write-Host "    notes:  $notesDir"
+    Write-Host "    docs:   $docsDir"
+    Write-Host '    (this spawns Sonnet with Read/Glob/Grep/Write; may take minutes)'
+
+    $today = (Get-Date).ToString('yyyy-MM-dd')
+    $prompt = @"
+You are generating durable engineering documentation for the repo at the current working directory (name: $repo).
+
+INPUTS:
+- Scratch notes are in: $notesDir (use Read/Glob to enumerate and load)
+- Repo source is at the current working directory (use Glob/Grep/Read)
+
+OUTPUTS (write each with the Write tool, only if you have substantive content):
+- $docsDir\architecture.md   - system design, major components, data flow, key entry points
+- $docsDir\onboarding.md     - getting started, env setup, first contribution walkthrough
+- $docsDir\runbook.md        - ops procedures, deploy, rollback, debugging production
+- $docsDir\conventions.md    - coding style, naming, patterns, testing conventions
+- $docsDir\api.md            - public API reference (endpoints, types, commands); skip if the repo has no public surface
+
+SAFETY:
+- DO NOT modify any files outside $docsDir. Never Edit or Write into the repo source tree.
+- If a target doc contains a block delimited by <!-- AUTODOC:START --> and <!-- AUTODOC:END -->, only rewrite content INSIDE those sentinels. Preserve everything outside verbatim.
+- If a target doc exists and has NO sentinels, treat it as hand-curated: read it, merge respectfully (add sections, refine existing prose), do not wholesale replace it.
+
+METHOD:
+1. First, list and skim all notes under $notesDir.
+2. Then scan the repo structure: top-level files, package/module layout, entry points, README, tests, CI config.
+3. For each target doc, write content only if you have substantive grounded material. If you lack evidence for a section, omit it. Do NOT hallucinate features, endpoints, or configs.
+4. Prefer concrete references: cite files as ``path:line`` or ``path``. Show real commands, not placeholders.
+5. Keep prose terse: drop articles, fragments ok, technical identifiers exact.
+
+OUTPUT DISCIPLINE:
+- Each file starts with YAML frontmatter: ``repo: $repo``, ``type: <architecture|onboarding|runbook|conventions|api>``, ``updated: $today``.
+- Use a single H1 matching the doc type, then H2 sections.
+- When you finish, print a one-line summary of which files you wrote or updated.
+"@
+
+    $env:LOREKEEPER_AUTONOTE_CHILD = '1'
+    & claude -p $prompt `
+      --model claude-sonnet-4-6 `
+      --add-dir $docsDir --add-dir $notesDir `
+      --allowed-tools 'Read,Glob,Grep,Write' `
+      --permission-mode bypassPermissions
+
+    & qmd update 2>$null | Out-Null
+    & qmd embed  2>$null | Out-Null
     break
   }
 

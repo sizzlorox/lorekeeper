@@ -24,6 +24,10 @@ No mid-session decision needed. Write inline only on explicit user request
 ("remember X", "document Y feature", "record this decision"). Use format
 below for notes; for feature docs and ADRs read an existing neighbor first.
 
+Multi-doc reference (architecture/onboarding/runbook/conventions/api) = on
+demand via `lorekeeper distill`. Not this hook's job. Point user at it if
+they ask for those.
+
 ### note format
 
 Path: `__LOREKEEPER_HOME__/notes/<repo>/<kebab-slug>.md`

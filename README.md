@@ -17,6 +17,8 @@ $XDG_DATA_HOME/lorekeeper/
     - `adr` → `docs/<repo>/adr/ADR-NNNN-<slug>.md` — architecture decision record with context / decision / consequences / alternatives. Sequential numbering.
 
   No mid-session hinting to Claude. Disable with `touch $LOREKEEPER_HOME/.autonote-off` or `LOREKEEPER_AUTONOTE=off`.
+
+- **Distills on demand.** `lorekeeper distill` runs inside a repo and spawns a Sonnet session with Read/Glob/Grep/Write to synthesize durable engineering docs from accumulated notes + the codebase: `architecture.md`, `onboarding.md`, `runbook.md`, `conventions.md`, `api.md`. Use `<!-- AUTODOC:START -->` / `<!-- AUTODOC:END -->` sentinels in any hand-curated doc to pin sections the distill pass is allowed to rewrite. Expensive (several $ per repo) and slow (minutes) — run occasionally, not on every session.
 - **Re-indexes itself.** A `PostToolUse` hook runs `qmd update && qmd embed` in the background whenever Claude writes under the notes/docs tree. The autonote hook triggers the same reindex directly after it writes.
 - **Uses caveman if present.** Ships a caveman-compressed `CLAUDE.md` block to cut input tokens on every session, and instructs Claude to write notes in caveman-speak so retrieval is cheap too.
 
@@ -113,6 +115,9 @@ lorekeeper add-repo <name>     Create notes/ and docs/ dirs, register contexts i
 lorekeeper note <repo> <slug>  Open $EDITOR on a note (creates from template if missing)
 lorekeeper doc <repo> <slug>   Same for docs/
 lorekeeper reindex             Force qmd update + embed
+lorekeeper distill [repo]      Synthesize durable docs (architecture/runbook/onboarding/
+                               conventions/api) from notes + codebase. Must be run from
+                               inside the repo's git worktree. Costs a few $ per run.
 lorekeeper ls [repo]           List notes/docs per repo
 ```
 
@@ -172,6 +177,14 @@ Session ends → SessionEnd hook fires (detached)
             └─ adr         → docs/<repo>/adr/ADR-NNNN-<slug>.md  (monotonic numbering)
 
         then: qmd update && qmd embed, append $LOREKEEPER_HOME/.autonote.log
+
+`lorekeeper distill` (on-demand, not scheduled)
+    │
+    └─► Sonnet + Read/Glob/Grep/Write inside the repo:
+        reads all notes, scans codebase, writes/updates
+        docs/<repo>/{architecture,onboarding,runbook,conventions,api}.md
+        Hand-curated docs: add <!-- AUTODOC:START --> / <!-- AUTODOC:END -->
+        around the sections the distill pass is allowed to rewrite.
 
 Next session: the new note is searchable via MCP immediately.
 ```

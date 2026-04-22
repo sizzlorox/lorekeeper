@@ -33,6 +33,11 @@ feature", "record this decision"). Use the note format below for quick
 memories; for feature docs and ADRs, read an existing neighbor under
 `__LOREKEEPER_HOME__/docs/<repo>/` first to match style.
 
+Durable multi-doc reference (`architecture.md`, `onboarding.md`, `runbook.md`,
+`conventions.md`, `api.md`) is produced on demand by `lorekeeper distill`, not
+by this hook. Don't hand-write those — suggest the user run distill if they
+ask for them.
+
 ### Note format
 
 Path: `__LOREKEEPER_HOME__/notes/<repo-name>/<kebab-slug>.md`
