@@ -42,7 +42,7 @@ qmd is installed by the installer if missing.
 ### Linux / macOS
 
 ```bash
-git clone https://github.com/<you>/lorekeeper ~/.local/share/lorekeeper
+git clone https://github.com/sizzlorox/lorekeeper ~/.local/share/lorekeeper
 ~/.local/share/lorekeeper/install.sh
 ```
 
@@ -61,7 +61,7 @@ Use the native PowerShell installer — no bash, no `jq` needed. Works in PowerS
 **Extra prerequisite:** [Git for Windows](https://git-scm.com/download/win). `qmd` ships its npm entrypoint as a POSIX shell script, so it needs `sh.exe` — Git for Windows provides one at `C:\Program Files\Git\bin\sh.exe`. The installer locates it automatically (or honors `$env:LOREKEEPER_SH`) and rewrites qmd's broken npm shims (`qmd.ps1` / `qmd.cmd`) to call it directly. If you re-install qmd via `npm` later, re-run `install.ps1` to repatch the shims.
 
 ```powershell
-git clone https://github.com/<you>/lorekeeper "$env:LOCALAPPDATA\lorekeeper"
+git clone https://github.com/sizzlorox/lorekeeper "$env:LOCALAPPDATA\lorekeeper"
 powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\lorekeeper\install.ps1"
 ```
 
