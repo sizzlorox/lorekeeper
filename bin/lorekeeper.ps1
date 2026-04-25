@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 # lorekeeper CLI (Windows/PowerShell) — wrapper around qmd + filesystem ops.
 
 $ErrorActionPreference = 'Stop'
@@ -22,6 +22,8 @@ lorekeeper <command> [args]
                       conventions/api) from notes + codebase. Run from the
                       repo root; arg defaults to the current git toplevel name.
                       Uses Sonnet + tools; can take minutes and cost a few $.
+  skipped [repo]      review sessions the classifier discarded (-> none)
+  validate <repo>     list notes not updated in 90+ days; open for review
   home                print lorekeeper home
   help                this message
 '@
@@ -41,6 +43,7 @@ function Ensure-Template {
 repo: __REPO__
 topic: __SLUG__
 date: __DATE__
+updated: __DATE__
 tags: []
 ---
 
@@ -194,6 +197,59 @@ switch ($cmd) {
     break
   }
 
+  'skipped' {
+    $repoFilter  = if ($rest.Count -ge 1) { $rest[0] } else { '' }
+    $skippedLog  = Join-Path $LorekeeperHome '.skipped.log'
+    if (-not (Test-Path $skippedLog)) {
+      Write-Output '(no skipped sessions logged yet)'
+    } elseif ($repoFilter) {
+      $lines = Get-Content -LiteralPath $skippedLog -ErrorAction SilentlyContinue
+      $filtered = $lines | Where-Object { $_ -match "`t$([regex]::Escape($repoFilter))`t" }
+      if ($filtered) { $filtered | ForEach-Object { Write-Output $_ } }
+      else { Write-Output "(no skipped sessions for '$repoFilter')" }
+    } else {
+      Get-Content -LiteralPath $skippedLog -ErrorAction SilentlyContinue | ForEach-Object { Write-Output $_ }
+    }
+    break
+  }
+
+  'validate' {
+    $repo = if ($rest.Count -ge 1) { $rest[0] } else { $null }
+    if (-not $repo) { Die 'usage: lorekeeper validate <repo>' }
+    $notesDir = Join-Path $LorekeeperHome "notes\$repo"
+    if (-not (Test-Path $notesDir)) { Die "no notes for repo '$repo'" }
+    $staleCutoff = (Get-Date).AddDays(-90).ToString('yyyy-MM-dd')
+    $staleFiles = @()
+    Get-ChildItem -Path $notesDir -Filter *.md -File -ErrorAction SilentlyContinue | ForEach-Object {
+      $f = $_.FullName
+      $lines = Get-Content -LiteralPath $f -TotalCount 20 -ErrorAction SilentlyContinue
+      $noteDate = ''
+      foreach ($ln in $lines) {
+        if ($ln -match '^updated:\s*(.+)') { $noteDate = $Matches[1].Trim(); break }
+      }
+      if (-not $noteDate) {
+        foreach ($ln in $lines) {
+          if ($ln -match '^date:\s*(.+)') { $noteDate = $Matches[1].Trim(); break }
+        }
+      }
+      if ($noteDate -and $noteDate -lt $staleCutoff) {
+        $staleFiles += $f
+        Write-Output ("STALE ($noteDate): " + $_.Name)
+      }
+    }
+    if ($staleFiles.Count -eq 0) {
+      Write-Output "No stale notes for '$repo' (90-day threshold)."
+    } else {
+      Write-Output ''
+      Write-Output "$($staleFiles.Count) stale note(s). Edit each and bump 'updated:' to mark validated."
+      $answer = Read-Host 'Open all for review? [y/N]'
+      if ($answer -match '^[Yy]') {
+        foreach ($f in $staleFiles) { Open-Editor $f }
+      }
+    }
+    break
+  }
+
   'distill' {
     if (-not (Get-Command claude -ErrorAction SilentlyContinue)) { Die 'claude CLI not on PATH' }
     $here = (Get-Location).Path
@@ -259,6 +315,14 @@ OUTPUT DISCIPLINE:
 
     & qmd update 2>$null | Out-Null
     & qmd embed  2>$null | Out-Null
+
+    # Clear distill-pending flag and update watermark.
+    $pendingFlag = Join-Path $LorekeeperHome "\.distill-pending\$repo"
+    if (Test-Path $pendingFlag) { Remove-Item -Force $pendingFlag -ErrorAction SilentlyContinue }
+    $notesCount = (Get-ChildItem -Path $notesDir -Filter *.md -File -ErrorAction SilentlyContinue | Measure-Object).Count
+    $watermarkDir = Join-Path $LorekeeperHome '.distill-watermark'
+    New-Item -ItemType Directory -Force -Path $watermarkDir | Out-Null
+    Set-Content -LiteralPath (Join-Path $watermarkDir $repo) -Value "$notesCount" -Encoding UTF8
     break
   }
 

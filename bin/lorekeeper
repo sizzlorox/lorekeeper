@@ -19,6 +19,8 @@ USAGE='lorekeeper <command> [args]
                       conventions/api) from notes + codebase. Run from the
                       repo root; arg defaults to the current git toplevel name.
                       Uses Sonnet + tools; can take minutes and cost a few $.
+  skipped [repo]      review sessions the classifier discarded (→ none)
+  validate <repo>     list notes not updated in 90+ days; open for review
   home                print $LOREKEEPER_HOME
   help                this message
 '
@@ -39,6 +41,7 @@ ensure_template() {
 repo: __REPO__
 topic: __SLUG__
 date: __DATE__
+updated: __DATE__
 tags: []
 ---
 
@@ -158,6 +161,49 @@ case "$cmd" in
     qmd update && qmd embed
     ;;
 
+  skipped)
+    repo_filter="${1:-}"
+    skipped_log="$LOREKEEPER_HOME/.skipped.log"
+    if [[ ! -f "$skipped_log" ]]; then
+      echo "(no skipped sessions logged yet)"
+    elif [[ -n "$repo_filter" ]]; then
+      grep $'\t'"$repo_filter"$'\t' "$skipped_log" 2>/dev/null \
+        || echo "(no skipped sessions for '$repo_filter')"
+    else
+      cat "$skipped_log"
+    fi
+    ;;
+
+  validate)
+    repo="${1:-}"; [[ -n "$repo" ]] || die "usage: lorekeeper validate <repo>"
+    notes_dir="$LOREKEEPER_HOME/notes/$repo"
+    [[ -d "$notes_dir" ]] || die "no notes for repo '$repo'"
+    stale_cutoff="$(date -d "90 days ago" +%Y-%m-%d 2>/dev/null \
+      || date -v-90d +%Y-%m-%d 2>/dev/null \
+      || die "cannot compute date; check your OS date command")"
+    stale_files=()
+    while IFS= read -r -d '' f; do
+      note_date="$(grep -m1 '^updated:' "$f" 2>/dev/null | sed 's/^updated:[[:space:]]*//')"
+      [[ -z "$note_date" ]] && note_date="$(grep -m1 '^date:' "$f" 2>/dev/null | sed 's/^date:[[:space:]]*//')"
+      if [[ -n "$note_date" && "$note_date" < "$stale_cutoff" ]]; then
+        stale_files+=("$f")
+        printf "STALE (%s): %s\n" "$note_date" "$(basename "$f")"
+      fi
+    done < <(find "$notes_dir" -maxdepth 1 -type f -name '*.md' -print0 2>/dev/null)
+    if [[ "${#stale_files[@]}" -eq 0 ]]; then
+      echo "No stale notes for '$repo' (90-day threshold)."
+    else
+      printf "\n%d stale note(s). Edit each and bump 'updated:' to mark validated.\n" "${#stale_files[@]}"
+      printf "Open all for review? [y/N] "
+      read -r answer
+      if [[ "$answer" =~ ^[Yy] ]]; then
+        for f in "${stale_files[@]}"; do
+          open_editor "$f"
+        done
+      fi
+    fi
+    ;;
+
   distill)
     command -v claude >/dev/null || die "claude CLI not on PATH"
     here="$(pwd)"
@@ -216,6 +262,15 @@ OUTPUT DISCIPLINE:
       --permission-mode bypassPermissions
 
     ( qmd update && qmd embed ) >/dev/null 2>&1 || true
+
+    # Clear distill-pending flag and update watermark.
+    pending_flag="$LOREKEEPER_HOME/.distill-pending/$repo"
+    [[ -f "$pending_flag" ]] && rm -f "$pending_flag"
+    notes_count="$(find "$LOREKEEPER_HOME/notes/$repo" -maxdepth 1 -type f -name '*.md' \
+      2>/dev/null | wc -l | tr -d ' ')"
+    watermark_dir="$LOREKEEPER_HOME/.distill-watermark"
+    mkdir -p "$watermark_dir"
+    echo "$notes_count" > "$watermark_dir/$repo"
     ;;
 
   *) die "unknown command: $cmd  (try: lorekeeper help)" ;;

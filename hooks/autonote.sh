@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # lorekeeper: SessionEnd hook — autonomous extraction.
-# Structural gate -> Haiku 4-way classifier -> Sonnet drafter routes to
-# notes/, docs/<feature>.md, or docs/adr/ADR-NNNN-<slug>.md.
+# Structural gate -> surface step -> Haiku classifier -> Sonnet drafter routes to
+# notes/, docs/<feature>.md, docs/adr/ADR-NNNN-<slug>.md, or notes/shared/.
 
 set -e
 
@@ -11,6 +11,7 @@ set -e
 CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 LOREKEEPER_HOME="$(cat "$CLAUDE_DIR/.lorekeeper-home" 2>/dev/null || echo "$HOME/.local/share/lorekeeper")"
 LOG="$LOREKEEPER_HOME/.autonote.log"
+SKIPPED_LOG="$LOREKEEPER_HOME/.skipped.log"
 
 # Off switches
 [[ -e "$LOREKEEPER_HOME/.autonote-off" ]] && exit 0
@@ -71,40 +72,130 @@ find "$seen_dir" -type f -mtime +30 -delete 2>/dev/null || true
 
   [[ ! -s "$condensed" ]] && exit 0
 
-  # --- Haiku classifier ---
-  gate_prompt='You classify finished Claude Code sessions. Reply with EXACTLY ONE WORD on line 1: none, note, feature-doc, or adr.
+  # --- surface implicit learnings (feeds classifier + drafter) ---
+  # One Haiku call extracts a session summary for qmd search and any implicit
+  # decisions/gotchas implied by tool calls but not stated in text.
+  surface_prompt='Analyze this Claude Code session. Output EXACTLY these two sections, no preamble:
 
-- note: scratch memory for a SINGLE non-obvious learning — debug dead-end + fix, library/API quirk, config in an odd place, undocumented convention. Not ongoing.
-- feature-doc: the session BUILT or substantially modified a nameable feature/subsystem future teammates would need onboarding docs for. Strong signal: new files/modules, components wired together, "shipped"/"done"/"works now" language, tests added.
-- adr: an architectural or design DECISION was made with reasoning that will constrain future work. Strong signal: alternatives weighed, tradeoffs discussed, decision rationale articulated.
-- none: nothing worth preserving cross-session (quick lookup, pure formatting, trivial Q&A).
-
-Default to none unless clear. Between note and feature-doc, prefer note. Return ONE WORD on line 1, nothing else.
+SUMMARY: <one sentence: what specific thing was learned or built; name the technology, feature, or subsystem>
+IMPLICIT:
+<one bullet per non-obvious decision, gotcha, or behavior implied by the tool calls but not stated explicitly in text>
+<write "(none)" if nothing non-obvious>
 
 TRANSCRIPT:
 '
-  gate_input="${gate_prompt}$(cat "$condensed")"
+  surface_out="$(LOREKEEPER_AUTONOTE_CHILD=1 claude -p "${surface_prompt}$(cat "$condensed")" \
+      --model claude-haiku-4-5-20251001 \
+      --tools "" 2>/dev/null || true)"
+
+  session_summary="$(printf '%s\n' "$surface_out" | grep -m1 '^SUMMARY:' \
+    | sed 's/^SUMMARY:[[:space:]]*//' | head -c 200)"
+  surfaced_text="$(printf '%s\n' "$surface_out" \
+    | awk '/^IMPLICIT:/{found=1; next} found{print}' \
+    | grep -v '^(none)$' | grep -v '^[[:space:]]*$' || true)"
+
+  # --- Haiku classifier (gets transcript + surfaced insights) ---
+  gate_prompt='You classify finished Claude Code sessions. Reply with EXACTLY ONE WORD on line 1: none, note, feature-doc, adr, or shared-note.
+
+- note: scratch memory for a SINGLE non-obvious learning — debug dead-end + fix, library/API quirk, config in an odd place, undocumented convention. Repo-specific.
+- feature-doc: the session BUILT or substantially modified a nameable feature/subsystem future teammates would need onboarding docs for. Strong signal: new files/modules, components wired together, "shipped"/"done"/"works now" language, tests added.
+- adr: an architectural or design DECISION was made with reasoning that will constrain future work. Strong signal: alternatives weighed, tradeoffs discussed, decision rationale articulated.
+- shared-note: a learning that applies ACROSS repos — dev environment quirk, infrastructure behavior (Docker/nginx/Redis/PM2/systemd), OS/platform gotcha, tool configuration affecting ALL projects.
+- none: nothing worth preserving cross-session (quick lookup, pure formatting, trivial Q&A).
+
+Default to none unless clear. Between note and feature-doc, prefer note. Between note and shared-note, prefer note unless clearly cross-repo infrastructure. Return ONE WORD on line 1, nothing else.
+
+SURFACED INSIGHTS:
+'
+  if [[ -n "$surfaced_text" ]]; then
+    gate_input="${gate_prompt}${surfaced_text}
+
+TRANSCRIPT:
+$(cat "$condensed")"
+  else
+    gate_input="${gate_prompt}(none)
+
+TRANSCRIPT:
+$(cat "$condensed")"
+  fi
+
   gate="$(LOREKEEPER_AUTONOTE_CHILD=1 claude -p "$gate_input" \
       --model claude-haiku-4-5-20251001 \
       --tools "" 2>/dev/null \
     | awk 'NR==1 {gsub(/[[:space:]]/,""); print tolower($0); exit}' | tr -cd 'a-z-')"
 
   case "$gate" in
-    note)        kind=note ;;
+    note)                   kind=note ;;
     feature-doc|featuredoc) kind=feature-doc ;;
-    adr)         kind=adr ;;
-    *)           exit 0 ;;
+    adr)                    kind=adr ;;
+    shared-note|sharednote) kind=shared-note ;;
+    *)
+      # Log to .skipped.log so classifier misses are reviewable.
+      if [[ -n "$session_summary" ]]; then
+        mkdir -p "$(dirname "$SKIPPED_LOG")"
+        stamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        printf '%s\t%s\t"%s"\t→ none\n' \
+          "$stamp" "$repo" "${session_summary:0:120}" >> "$SKIPPED_LOG"
+      fi
+      exit 0
+      ;;
   esac
 
   today="$(date +%Y-%m-%d)"
 
+  # Helper: run qmd similarity search via claude with MCP tools.
+  # Returns MATCH:<slug> or NO_MATCH (parsed from first output line).
+  qmd_find_similar() {
+    local collection="$1" path_filter="$2" query="$3"
+    [[ -z "$query" ]] && { echo "NO_MATCH"; return; }
+    local sim_prompt
+    sim_prompt="Use mcp__qmd__query to search collection \"$collection\" with this query.
+
+If the top result has similarity >= 0.82 AND its path contains '$path_filter', output on the FIRST LINE ONLY:
+MATCH:<filename-without-.md-extension>
+
+Otherwise output on the FIRST LINE ONLY:
+NO_MATCH
+
+No other output.
+
+Query: $query"
+    LOREKEEPER_AUTONOTE_CHILD=1 claude -p "$sim_prompt" \
+        --model claude-haiku-4-5-20251001 2>/dev/null \
+      | head -1 | tr -d '[:space:]' || echo "NO_MATCH"
+  }
+
   # --- collect per-kind context + build prompt ---
   case "$kind" in
-    note)
-      out_dir="$LOREKEEPER_HOME/notes/$repo"
+    note|shared-note)
+      if [[ "$kind" == "shared-note" ]]; then
+        out_dir="$LOREKEEPER_HOME/notes/shared"
+        path_filter="/notes/shared/"
+        repo_field="shared"
+        scope_note="This is a CROSS-REPO note about infrastructure/environment, not repo-specific code."
+      else
+        out_dir="$LOREKEEPER_HOME/notes/$repo"
+        path_filter="/notes/$repo/"
+        repo_field="$repo"
+        scope_note=""
+      fi
       mkdir -p "$out_dir"
-      # Pull existing notes so Sonnet can merge same-topic instead of fork.
-      # Cap each to 3KB to keep prompt size sane.
+
+      # qmd similarity search to find mandatory merge target.
+      sim_result="$(qmd_find_similar "lorekeeper-notes" "$path_filter" "$session_summary")"
+      merge_target_slug=""
+      merge_target_content=""
+      if [[ "$sim_result" == MATCH:* ]]; then
+        candidate_slug="${sim_result#MATCH:}"
+        candidate_slug="$(printf '%s' "$candidate_slug" | tr -cd 'A-Za-z0-9_-')"
+        candidate_path="$out_dir/$candidate_slug.md"
+        if [[ -f "$candidate_path" ]]; then
+          merge_target_slug="$candidate_slug"
+          merge_target_content="$(cat "$candidate_path")"
+        fi
+      fi
+
+      # Build existing-context block (fallback when no similarity match).
       existing_context=""
       while IFS= read -r -d '' f; do
         bn="$(basename "$f" .md)"
@@ -114,16 +205,32 @@ $(head -c 3000 "$f")
 "
       done < <(find "$out_dir" -maxdepth 1 -type f -name '*.md' -print0 2>/dev/null)
 
+      if [[ -n "$merge_target_slug" ]]; then
+        merge_block="MANDATORY MERGE TARGET: semantic similarity >= 0.82 matched existing note '$merge_target_slug'.
+You MUST merge into it. Reuse slug '$merge_target_slug', preserve existing bullets, add new insights, bump 'updated'. Do NOT create a new note.
+
+EXISTING NOTE (merge into this):
+$merge_target_content"
+      else
+        merge_block="Existing notes for this repo are below — if this session EXTENDS one of them (same topic/subsystem), reuse its slug and MERGE (preserve existing bullets, add new ones, bump 'updated'). If this session surfaced a NEW learning, pick a fresh slug.
+
+${existing_context:-(no existing notes)}"
+      fi
+
+      surfaced_block=""
+      [[ -n "$surfaced_text" ]] && surfaced_block="
+SURFACED IMPLICIT INSIGHTS (include relevant items in ## what i learned):
+$surfaced_text
+"
+
       draft_prompt="Extract the single most memory-worthy learning from the following Claude Code session as a note. Output ONLY the note contents, no preamble, no code fence.
 
-Existing notes for this repo are below — if this session EXTENDS one of them (same topic/subsystem), reuse its slug and MERGE (preserve existing bullets, add new ones, bump 'updated'). If this session surfaced a NEW learning, pick a fresh slug.
-
-${existing_context:-(no existing notes)}
-
+$merge_block
+$surfaced_block
 Exact format:
 
 ---
-repo: $repo
+repo: $repo_field
 topic: <2-5 words>
 date: <YYYY-MM-DD of first version; reuse from existing if merging, else $today>
 updated: $today
@@ -143,7 +250,7 @@ slug: <kebab-case-slug>
 <related files or external refs; omit section entirely if none>
 
 Rules:
-- Pick ONE specific learning. Best candidates: debug dead-end + fix, non-obvious API behavior, design decision + reasoning, config in odd location.
+- Pick ONE specific learning. Best candidates: debug dead-end + fix, non-obvious API behavior, design decision + reasoning, config in odd location. ${scope_note}
 - If nothing is truly non-obvious, output literally: SKIP
 - slug must be filesystem-safe kebab-case, stable across updates.
 - When merging, KEEP existing bullets that are still accurate; don't drop unless contradicted.
@@ -155,8 +262,20 @@ TRANSCRIPT:
     feature-doc)
       out_dir="$LOREKEEPER_HOME/docs/$repo"
       mkdir -p "$out_dir"
-      # Pull existing feature docs (excluding ADRs) so Sonnet can merge instead
-      # of fork. Cap each to 3KB to keep prompt size sane.
+
+      sim_result="$(qmd_find_similar "lorekeeper-docs" "/docs/$repo/" "$session_summary")"
+      merge_target_slug=""
+      merge_target_content=""
+      if [[ "$sim_result" == MATCH:* ]]; then
+        candidate_slug="${sim_result#MATCH:}"
+        candidate_slug="$(printf '%s' "$candidate_slug" | tr -cd 'A-Za-z0-9_-')"
+        candidate_path="$out_dir/$candidate_slug.md"
+        if [[ -f "$candidate_path" ]]; then
+          merge_target_slug="$candidate_slug"
+          merge_target_content="$(cat "$candidate_path")"
+        fi
+      fi
+
       existing_context=""
       while IFS= read -r -d '' f; do
         bn="$(basename "$f" .md)"
@@ -166,12 +285,28 @@ $(head -c 3000 "$f")
 "
       done < <(find "$out_dir" -maxdepth 1 -type f -name '*.md' -print0 2>/dev/null)
 
+      if [[ -n "$merge_target_slug" ]]; then
+        merge_block="MANDATORY MERGE TARGET: semantic similarity >= 0.82 matched existing doc '$merge_target_slug'.
+You MUST merge into it. Reuse slug '$merge_target_slug', preserve existing prose, add new details, bump 'updated'. Do NOT create a new doc.
+
+EXISTING DOC (merge into this):
+$merge_target_content"
+      else
+        merge_block="Existing feature docs for this repo are below — if this session EXTENDED one of them, reuse its slug and MERGE (preserve existing prose, add new sections/details, bump 'updated'). If this session built something NEW, pick a fresh slug.
+
+${existing_context:-(no existing feature docs)}"
+      fi
+
+      surfaced_block=""
+      [[ -n "$surfaced_text" ]] && surfaced_block="
+SURFACED IMPLICIT INSIGHTS (include relevant items in ## how it works):
+$surfaced_text
+"
+
       draft_prompt="Write engineering feature documentation for the work done in this Claude Code session. Output ONLY the doc contents, no preamble, no code fence.
 
-Existing feature docs for this repo are below — if this session EXTENDED one of them, reuse its slug and MERGE (preserve existing prose, add new sections/details, bump 'updated'). If this session built something NEW, pick a fresh slug.
-
-${existing_context:-(no existing feature docs)}
-
+$merge_block
+$surfaced_block
 Exact output format:
 
 ---
@@ -217,7 +352,15 @@ TRANSCRIPT:
       next_num="$(( ${last_num:-0} + 1 ))"
       adr_num="$(printf 'ADR-%04d' "$next_num")"
 
-      draft_prompt="Write an Architecture Decision Record (ADR) for the decision made in this Claude Code session. Output ONLY the ADR contents, no preamble, no code fence. Exact format:
+      surfaced_block=""
+      [[ -n "$surfaced_text" ]] && surfaced_block="
+SURFACED IMPLICIT INSIGHTS (include in ## decision or ## alternatives considered as relevant):
+$surfaced_text
+"
+
+      draft_prompt="Write an Architecture Decision Record (ADR) for the decision made in this Claude Code session. Output ONLY the ADR contents, no preamble, no code fence.
+${surfaced_block}
+Exact format:
 
 ---
 repo: $repo
@@ -269,7 +412,7 @@ TRANSCRIPT:
 
   # Per-kind target path + collision handling.
   case "$kind" in
-    note)
+    note|shared-note)
       # Overwrite on slug match — Sonnet was shown existing content and told to merge.
       out_path="$out_dir/$slug.md"
       ;;
@@ -291,6 +434,19 @@ TRANSCRIPT:
 
   mkdir -p "$(dirname "$LOG")"
   echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $repo [$kind]: $out_path (session $session_id)" >> "$LOG"
+
+  # Distill watermark: flag repo when 15+ notes written since last distill.
+  if [[ "$kind" == "note" ]]; then
+    watermark_dir="$LOREKEEPER_HOME/.distill-watermark"
+    pending_dir="$LOREKEEPER_HOME/.distill-pending"
+    mkdir -p "$watermark_dir" "$pending_dir"
+    notes_count="$(find "$LOREKEEPER_HOME/notes/$repo" -maxdepth 1 -type f -name '*.md' \
+      2>/dev/null | wc -l | tr -d ' ')"
+    last_watermark="$(cat "$watermark_dir/$repo" 2>/dev/null || echo 0)"
+    if [[ "$(( notes_count - last_watermark ))" -ge 15 ]]; then
+      touch "$pending_dir/$repo"
+    fi
+  fi
 ) >/dev/null 2>&1 </dev/null &
 disown 2>/dev/null || true
 

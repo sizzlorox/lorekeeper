@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 # lorekeeper: SessionStart / UserPromptSubmit hook (Windows/PowerShell)
 # Reads cwd from Claude Code's JSON input, resolves the repo name, and emits
 # an index of existing notes/docs. stdout becomes additional context.
@@ -45,8 +45,28 @@ if ($cwd -and (Test-Path $cwd)) {
 
 if (-not $repo) { exit 0 }
 
-$notesDir = Join-Path $LorekeeperHome "notes\$repo"
-$docsDir  = Join-Path $LorekeeperHome "docs\$repo"
+$notesDir       = Join-Path $LorekeeperHome "notes\$repo"
+$docsDir        = Join-Path $LorekeeperHome "docs\$repo"
+$sharedNotesDir = Join-Path $LorekeeperHome 'notes\shared'
+
+# Staleness cutoff: 90 days
+$staleCutoff = (Get-Date).AddDays(-90).ToString('yyyy-MM-dd')
+
+function Get-NoteDate([string]$FilePath) {
+  $lines = Get-Content -LiteralPath $FilePath -TotalCount 20 -ErrorAction SilentlyContinue
+  foreach ($ln in $lines) {
+    if ($ln -match '^updated:\s*(.+)') { return $Matches[1].Trim() }
+  }
+  foreach ($ln in $lines) {
+    if ($ln -match '^date:\s*(.+)')    { return $Matches[1].Trim() }
+  }
+  return ''
+}
+
+function Is-Stale([string]$FilePath) {
+  $d = Get-NoteDate $FilePath
+  return ($d -ne '' -and $d -lt $staleCutoff)
+}
 
 function Get-MdList {
   param([string]$Dir)
@@ -59,12 +79,12 @@ function Get-MdList {
     } | Sort-Object
 }
 
-$notesFiles = @(Get-MdList -Dir $notesDir)
-$docsFiles  = @(Get-MdList -Dir $docsDir)
+$notesFiles  = @(Get-MdList -Dir $notesDir)
+$docsFiles   = @(Get-MdList -Dir $docsDir)
+$sharedFiles = @(Get-MdList -Dir $sharedNotesDir)
 
-if ($notesFiles.Count -eq 0 -and $docsFiles.Count -eq 0) {
-  # No memory yet — stay silent. The SessionEnd autonote hook captures
-  # learnings without prompting Claude mid-session.
+if ($notesFiles.Count -eq 0 -and $docsFiles.Count -eq 0 -and $sharedFiles.Count -eq 0) {
+  # No memory yet — stay silent.
   exit 0
 }
 
@@ -75,14 +95,39 @@ Write-Output 'to search semantically, or `mcp__qmd__get` to fetch a specific fil
 Write-Output "Pull only what the current task needs — don't bulk-load."
 Write-Output ''
 
+function Emit-Listing {
+  param([string]$Kind, [string]$RepoName, [string[]]$Files, [string]$BaseDir)
+  foreach ($f in $Files) {
+    $staleMarker = ''
+    $fullPath = Join-Path $BaseDir $f
+    if ((Test-Path $fullPath) -and (Is-Stale $fullPath)) { $staleMarker = ' [STALE?]' }
+    Write-Output "  $Kind/$RepoName/$f$staleMarker"
+  }
+}
+
 if ($notesFiles.Count -gt 0) {
   Write-Output "### notes ($($notesFiles.Count) files):"
-  foreach ($f in $notesFiles) { Write-Output "  notes/$repo/$f" }
+  Emit-Listing -Kind 'notes' -RepoName $repo -Files $notesFiles -BaseDir $notesDir
   Write-Output ''
 }
+
+if ($sharedFiles.Count -gt 0) {
+  Write-Output "### shared notes ($($sharedFiles.Count) files — cross-repo):"
+  Emit-Listing -Kind 'notes' -RepoName 'shared' -Files $sharedFiles -BaseDir $sharedNotesDir
+  Write-Output ''
+}
+
 if ($docsFiles.Count -gt 0) {
   Write-Output "### docs ($($docsFiles.Count) files):"
-  foreach ($f in $docsFiles) { Write-Output "  docs/$repo/$f" }
+  Emit-Listing -Kind 'docs' -RepoName $repo -Files $docsFiles -BaseDir $docsDir
+  Write-Output ''
+}
+
+# Distill pending reminder.
+$pendingFlag = Join-Path $LorekeeperHome "\.distill-pending\$repo"
+if (Test-Path $pendingFlag) {
+  Write-Output '> **lorekeeper:** distill pending for this repo — notes have grown significantly since'
+  Write-Output '> last synthesis. Consider running `lorekeeper distill` when this session ends.'
   Write-Output ''
 }
 

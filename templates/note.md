@@ -2,6 +2,7 @@
 repo: __REPO__
 topic: __SLUG__
 date: __DATE__
+updated: __DATE__
 tags: []
 ---
 

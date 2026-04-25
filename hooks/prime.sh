@@ -43,6 +43,26 @@ fi
 
 notes_dir="$LOREKEEPER_HOME/notes/$repo"
 docs_dir="$LOREKEEPER_HOME/docs/$repo"
+shared_notes_dir="$LOREKEEPER_HOME/notes/shared"
+
+# Staleness: notes with updated/date older than 90 days get a [STALE?] marker.
+stale_cutoff="$(date -d "90 days ago" +%Y-%m-%d 2>/dev/null \
+  || date -v-90d +%Y-%m-%d 2>/dev/null \
+  || echo "")"
+
+get_note_date() {
+  local f="$1" d
+  d="$(grep -m1 '^updated:' "$f" 2>/dev/null | sed 's/^updated:[[:space:]]*//')"
+  [[ -z "$d" ]] && d="$(grep -m1 '^date:' "$f" 2>/dev/null | sed 's/^date:[[:space:]]*//')"
+  printf '%s\n' "$d"
+}
+
+is_stale() {
+  local f="$1" note_date
+  [[ -z "$stale_cutoff" ]] && return 1
+  note_date="$(get_note_date "$f")"
+  [[ -n "$note_date" && "$note_date" < "$stale_cutoff" ]]
+}
 
 # List helpers — only the path relative to $d, one per line.
 # Portable: uses find + sed (no GNU -printf).
@@ -56,8 +76,9 @@ list_md() {
 
 notes_files="$(list_md "$notes_dir")"
 docs_files="$(list_md "$docs_dir")"
+shared_files="$(list_md "$shared_notes_dir")"
 
-if [[ -z "$notes_files" && -z "$docs_files" ]]; then
+if [[ -z "$notes_files" && -z "$docs_files" && -z "$shared_files" ]]; then
   # No memory yet — stay silent. The SessionEnd autonote hook captures
   # learnings without prompting Claude mid-session.
   exit 0
@@ -72,24 +93,44 @@ Pull only what the current task needs — don't bulk-load.
 
 EOF
 
-# Use a printf loop instead of `echo | sed "s|^|...|"` so shellcheck doesn't
-# complain about SC2001 (parameter expansion is clearer for a per-line prefix).
+# Emit listing with optional [STALE?] markers.
 emit_listing() {
-  local kind="$1" list="$2"
+  local kind="$1" repo_name="$2" list="$3" base_dir="$4"
   while IFS= read -r line; do
-    printf '  %s/%s/%s\n' "$kind" "$repo" "$line"
+    local stale_marker=""
+    local note_path="$base_dir/$line"
+    if [[ -f "$note_path" ]] && is_stale "$note_path"; then
+      stale_marker=" [STALE?]"
+    fi
+    printf '  %s/%s/%s%s\n' "$kind" "$repo_name" "$line" "$stale_marker"
   done <<<"$list"
 }
 
 if [[ -n "$notes_files" ]]; then
   echo "### notes ($(echo "$notes_files" | wc -l | tr -d ' ') files):"
-  emit_listing notes "$notes_files"
+  emit_listing notes "$repo" "$notes_files" "$notes_dir"
+  echo
+fi
+
+if [[ -n "$shared_files" ]]; then
+  echo "### shared notes ($(echo "$shared_files" | wc -l | tr -d ' ') files — cross-repo):"
+  emit_listing notes shared "$shared_files" "$shared_notes_dir"
   echo
 fi
 
 if [[ -n "$docs_files" ]]; then
   echo "### docs ($(echo "$docs_files" | wc -l | tr -d ' ') files):"
-  emit_listing docs "$docs_files"
+  emit_listing docs "$repo" "$docs_files" "$docs_dir"
+  echo
+fi
+
+# Distill pending reminder: emitted when 15+ notes written since last distill.
+pending_flag="$LOREKEEPER_HOME/.distill-pending/$repo"
+if [[ -f "$pending_flag" ]]; then
+  cat <<'DISTILL'
+> **lorekeeper:** distill pending for this repo — notes have grown significantly since
+> last synthesis. Consider running `lorekeeper distill` when this session ends.
+DISTILL
   echo
 fi
 

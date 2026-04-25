@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 # lorekeeper: SessionEnd hook (Windows) — autonomous extraction.
-# Structural gate -> Haiku 4-way classifier -> Sonnet drafter routes to
-# notes/, docs/<feature>.md, or docs/adr/ADR-NNNN-<slug>.md.
+# Structural gate -> surface step -> Haiku classifier -> Sonnet drafter routes to
+# notes/, docs/<feature>.md, docs/adr/ADR-NNNN-<slug>.md, or notes/shared/.
 
 $ErrorActionPreference = 'SilentlyContinue'
 
@@ -105,22 +105,60 @@ $condensed = $sb.ToString()
 if ($condensed.Length -gt 60000) { $condensed = $condensed.Substring(0, 60000) }
 if (-not $condensed.Trim()) { exit 0 }
 
-# --- Haiku classifier ---
-$gatePrompt = @"
-You classify finished Claude Code sessions. Reply with EXACTLY ONE WORD on line 1: none, note, feature-doc, or adr.
+# --- surface implicit learnings (Feature 3) ---
+$surfacePrompt = @"
+Analyze this Claude Code session. Output EXACTLY these two sections, no preamble:
 
-- note: scratch memory for a SINGLE non-obvious learning — debug dead-end + fix, library/API quirk, config in an odd place, undocumented convention. Not ongoing.
-- feature-doc: the session BUILT or substantially modified a nameable feature/subsystem future teammates would need onboarding docs for. Strong signal: new files/modules, components wired together, "shipped"/"done"/"works now" language, tests added.
-- adr: an architectural or design DECISION was made with reasoning that will constrain future work. Strong signal: alternatives weighed, tradeoffs discussed, decision rationale articulated.
-- none: nothing worth preserving cross-session.
-
-Default to none unless clear. Between note and feature-doc, prefer note. Return ONE WORD on line 1, nothing else.
+SUMMARY: <one sentence: what specific thing was learned or built; name the technology, feature, or subsystem>
+IMPLICIT:
+<one bullet per non-obvious decision, gotcha, or behavior implied by the tool calls but not stated explicitly in text>
+<write "(none)" if nothing non-obvious>
 
 TRANSCRIPT:
 $condensed
 "@
 
 $env:LOREKEEPER_AUTONOTE_CHILD = '1'
+$surfaceOut = & claude -p $surfacePrompt --model claude-haiku-4-5-20251001 --tools '' 2>$null
+$sessionSummary = ''
+$surfacedText = ''
+if ($surfaceOut) {
+  $surfaceLines = ($surfaceOut -join "`n") -split "`n"
+  foreach ($ln in $surfaceLines) {
+    if ($ln -match '^SUMMARY:\s*(.+)') { $sessionSummary = $Matches[1].Trim(); break }
+  }
+  if ($sessionSummary.Length -gt 200) { $sessionSummary = $sessionSummary.Substring(0, 200) }
+  $inImplicit = $false
+  $implicitLines = @()
+  foreach ($ln in $surfaceLines) {
+    if ($ln -match '^IMPLICIT:') { $inImplicit = $true; continue }
+    if ($inImplicit -and $ln.Trim() -ne '(none)' -and $ln.Trim() -ne '') {
+      $implicitLines += $ln
+    }
+  }
+  $surfacedText = ($implicitLines -join "`n")
+}
+
+# --- Haiku classifier (gets transcript + surfaced insights) ---
+$surfacedSection = if ($surfacedText) { $surfacedText } else { '(none)' }
+$gatePrompt = @"
+You classify finished Claude Code sessions. Reply with EXACTLY ONE WORD on line 1: none, note, feature-doc, adr, or shared-note.
+
+- note: scratch memory for a SINGLE non-obvious learning — debug dead-end + fix, library/API quirk, config in an odd place, undocumented convention. Repo-specific.
+- feature-doc: the session BUILT or substantially modified a nameable feature/subsystem future teammates would need onboarding docs for. Strong signal: new files/modules, components wired together, "shipped"/"done"/"works now" language, tests added.
+- adr: an architectural or design DECISION was made with reasoning that will constrain future work. Strong signal: alternatives weighed, tradeoffs discussed, decision rationale articulated.
+- shared-note: a learning that applies ACROSS repos — dev environment quirk, infrastructure behavior (Docker/nginx/Redis/PM2/systemd), OS/platform gotcha, tool configuration affecting ALL projects.
+- none: nothing worth preserving cross-session.
+
+Default to none unless clear. Between note and feature-doc, prefer note. Between note and shared-note, prefer note unless clearly cross-repo infrastructure. Return ONE WORD on line 1, nothing else.
+
+SURFACED INSIGHTS:
+$surfacedSection
+
+TRANSCRIPT:
+$condensed
+"@
+
 $gateOut = & claude -p $gatePrompt --model claude-haiku-4-5-20251001 --tools '' 2>$null
 if (-not $gateOut) { exit 0 }
 $firstRaw = ($gateOut -split "`n")[0]
@@ -132,22 +170,78 @@ $kind = switch ($gateFirst) {
   'featuredoc'   { 'feature-doc' }
   'feature-doc'  { 'feature-doc' }
   'adr'          { 'adr' }
+  'sharednote'   { 'shared-note' }
+  'shared-note'  { 'shared-note' }
   default        { $null }
 }
-if (-not $kind) { exit 0 }
+if (-not $kind) {
+  # Log skipped sessions so classifier misses are reviewable.
+  if ($sessionSummary) {
+    $skippedLog = Join-Path $LorekeeperHome '.skipped.log'
+    $stamp = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+    $summaryTrunc = if ($sessionSummary.Length -gt 120) { $sessionSummary.Substring(0, 120) } else { $sessionSummary }
+    Add-Content -LiteralPath $skippedLog -Value "$stamp`t$Repo`t`"$summaryTrunc`"`t-> none"
+  }
+  exit 0
+}
 
 $today = (Get-Date).ToString('yyyy-MM-dd')
+
+# Helper: run qmd similarity search via claude with MCP tools.
+function Find-SimilarNote {
+  param([string]$Collection, [string]$PathFilter, [string]$Query)
+  if (-not $Query) { return 'NO_MATCH' }
+  $simPrompt = @"
+Use mcp__qmd__query to search collection "$Collection" with this query.
+
+If the top result has similarity >= 0.82 AND its path contains '$PathFilter', output on the FIRST LINE ONLY:
+MATCH:<filename-without-.md-extension>
+
+Otherwise output on the FIRST LINE ONLY:
+NO_MATCH
+
+No other output.
+
+Query: $Query
+"@
+  $simOut = & claude -p $simPrompt --model claude-haiku-4-5-20251001 2>$null
+  if ($simOut) { return ($simOut -split "`n")[0].Trim() -replace '\s','' }
+  return 'NO_MATCH'
+}
 
 # --- per-kind prompt + output dir ---
 $notesBase = Join-Path $LorekeeperHome "notes\$Repo"
 $docsBase  = Join-Path $LorekeeperHome "docs\$Repo"
 $adrBase   = Join-Path $docsBase 'adr'
 
-if ($kind -eq 'note') {
-  $outDir = $notesBase
+if ($kind -eq 'note' -or $kind -eq 'shared-note') {
+  if ($kind -eq 'shared-note') {
+    $outDir      = Join-Path $LorekeeperHome 'notes\shared'
+    $pathFilter  = '/notes/shared/'
+    $repoField   = 'shared'
+    $scopeNote   = 'This is a CROSS-REPO note about infrastructure/environment, not repo-specific code.'
+  } else {
+    $outDir      = $notesBase
+    $pathFilter  = "/notes/$Repo/"
+    $repoField   = $Repo
+    $scopeNote   = ''
+  }
   New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 
-  # Include existing notes (cap each at 3KB) so Sonnet can merge same-topic.
+  # qmd similarity search for mandatory merge target.
+  $simResult = Find-SimilarNote -Collection 'lorekeeper-notes' -PathFilter $pathFilter -Query $sessionSummary
+  $mergeTargetSlug = ''
+  $mergeTargetContent = ''
+  if ($simResult -match '^MATCH:(.+)') {
+    $candidateSlug = ($Matches[1] -replace '[^A-Za-z0-9_\-]','')
+    $candidatePath = Join-Path $outDir "$candidateSlug.md"
+    if (Test-Path $candidatePath) {
+      $mergeTargetSlug    = $candidateSlug
+      $mergeTargetContent = Get-Content -Raw -LiteralPath $candidatePath -ErrorAction SilentlyContinue
+    }
+  }
+
+  # Build existing-context fallback.
   $existingCtx = ''
   if (Test-Path $outDir) {
     Get-ChildItem -Path $outDir -Filter *.md -File -ErrorAction SilentlyContinue | ForEach-Object {
@@ -160,17 +254,23 @@ if ($kind -eq 'note') {
   }
   if (-not $existingCtx) { $existingCtx = '(no existing notes)' }
 
+  $mergeBlock = if ($mergeTargetSlug) {
+    "MANDATORY MERGE TARGET: semantic similarity >= 0.82 matched existing note '$mergeTargetSlug'.`nYou MUST merge into it. Reuse slug '$mergeTargetSlug', preserve existing bullets, add new insights, bump 'updated'. Do NOT create a new note.`n`nEXISTING NOTE (merge into this):`n$mergeTargetContent"
+  } else {
+    "Existing notes for this repo are below — if this session EXTENDS one of them (same topic/subsystem), reuse its slug and MERGE (preserve existing bullets, add new ones, bump 'updated'). If this session surfaced a NEW learning, pick a fresh slug.`n`n$existingCtx"
+  }
+
+  $surfacedBlock = if ($surfacedText) { "`nSURFACED IMPLICIT INSIGHTS (include relevant items in ## what i learned):`n$surfacedText`n" } else { '' }
+
   $draftPrompt = @"
 Extract the single most memory-worthy learning from the following Claude Code session as a note. Output ONLY the note contents, no preamble, no code fence.
 
-Existing notes for this repo are below — if this session EXTENDS one of them (same topic/subsystem), reuse its slug and MERGE (preserve existing bullets, add new ones, bump 'updated'). If this session surfaced a NEW learning, pick a fresh slug.
-
-$existingCtx
-
+$mergeBlock
+$surfacedBlock
 Exact format:
 
 ---
-repo: $Repo
+repo: $repoField
 topic: <2-5 words>
 date: <YYYY-MM-DD of first version; reuse from existing if merging, else $today>
 updated: $today
@@ -190,7 +290,7 @@ slug: <kebab-case-slug>
 <related files or external refs; omit section entirely if none>
 
 Rules:
-- Pick ONE specific learning.
+- Pick ONE specific learning. $scopeNote
 - If nothing is truly non-obvious, output literally: SKIP
 - slug kebab-case, no spaces, stable across updates.
 - When merging, keep existing bullets that are still accurate; don't drop unless contradicted.
@@ -203,7 +303,18 @@ elseif ($kind -eq 'feature-doc') {
   $outDir = $docsBase
   New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 
-  # Include existing feature docs (cap each at 3KB) so Sonnet can merge.
+  $simResult = Find-SimilarNote -Collection 'lorekeeper-docs' -PathFilter "/docs/$Repo/" -Query $sessionSummary
+  $mergeTargetSlug = ''
+  $mergeTargetContent = ''
+  if ($simResult -match '^MATCH:(.+)') {
+    $candidateSlug = ($Matches[1] -replace '[^A-Za-z0-9_\-]','')
+    $candidatePath = Join-Path $outDir "$candidateSlug.md"
+    if (Test-Path $candidatePath) {
+      $mergeTargetSlug    = $candidateSlug
+      $mergeTargetContent = Get-Content -Raw -LiteralPath $candidatePath -ErrorAction SilentlyContinue
+    }
+  }
+
   $existingCtx = ''
   if (Test-Path $outDir) {
     Get-ChildItem -Path $outDir -Filter *.md -File -ErrorAction SilentlyContinue | ForEach-Object {
@@ -216,13 +327,19 @@ elseif ($kind -eq 'feature-doc') {
   }
   if (-not $existingCtx) { $existingCtx = '(no existing feature docs)' }
 
+  $mergeBlock = if ($mergeTargetSlug) {
+    "MANDATORY MERGE TARGET: semantic similarity >= 0.82 matched existing doc '$mergeTargetSlug'.`nYou MUST merge into it. Reuse slug '$mergeTargetSlug', preserve existing prose, add new details, bump 'updated'. Do NOT create a new doc.`n`nEXISTING DOC (merge into this):`n$mergeTargetContent"
+  } else {
+    "Existing feature docs for this repo are below — if this session EXTENDED one of them, reuse its slug and MERGE (preserve existing prose, add new sections/details, bump 'updated'). If this session built something NEW, pick a fresh slug.`n`n$existingCtx"
+  }
+
+  $surfacedBlock = if ($surfacedText) { "`nSURFACED IMPLICIT INSIGHTS (include relevant items in ## how it works):`n$surfacedText`n" } else { '' }
+
   $draftPrompt = @"
 Write engineering feature documentation for the work done in this Claude Code session. Output ONLY the doc contents, no preamble, no code fence.
 
-Existing feature docs for this repo are below — if this session EXTENDED one of them, reuse its slug and MERGE (preserve existing prose, add new sections/details, bump 'updated'). If this session built something NEW, pick a fresh slug.
-
-$existingCtx
-
+$mergeBlock
+$surfacedBlock
 Exact output format:
 
 ---
@@ -272,8 +389,12 @@ else { # adr
   }
   $adrNum = 'ADR-{0:D4}' -f ($lastNum + 1)
 
+  $surfacedBlock = if ($surfacedText) { "`nSURFACED IMPLICIT INSIGHTS (include in ## decision or ## alternatives considered as relevant):`n$surfacedText`n" } else { '' }
+
   $draftPrompt = @"
-Write an Architecture Decision Record (ADR) for the decision made in this Claude Code session. Output ONLY the ADR contents, no preamble, no code fence. Exact format:
+Write an Architecture Decision Record (ADR) for the decision made in this Claude Code session. Output ONLY the ADR contents, no preamble, no code fence.
+$surfacedBlock
+Exact format:
 
 ---
 repo: $Repo
@@ -327,8 +448,9 @@ New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 
 # Per-kind target path
 $outPath = switch ($kind) {
-  'note'        { Join-Path $outDir "$slug.md" }   # overwrite on match (merge was Sonnet's job)
-  'feature-doc' { Join-Path $outDir "$slug.md" }   # overwrite on match (merge was Sonnet's job)
+  'note'        { Join-Path $outDir "$slug.md" }
+  'shared-note' { Join-Path $outDir "$slug.md" }
+  'feature-doc' { Join-Path $outDir "$slug.md" }
   'adr'         { Join-Path $outDir ($adrNum + '-' + $slug + '.md') }
 }
 
@@ -354,6 +476,21 @@ if (Get-Command qmd -ErrorAction SilentlyContinue) {
 $logPath = Join-Path $LorekeeperHome '.autonote.log'
 $stamp = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
 Add-Content -LiteralPath $logPath -Value "[$stamp] $Repo [$kind]: $outPath (session $SessionId)"
+
+# Distill watermark: flag repo when 15+ notes written since last distill.
+if ($kind -eq 'note') {
+  $watermarkDir = Join-Path $LorekeeperHome '.distill-watermark'
+  $pendingDir   = Join-Path $LorekeeperHome '.distill-pending'
+  New-Item -ItemType Directory -Force -Path $watermarkDir | Out-Null
+  New-Item -ItemType Directory -Force -Path $pendingDir   | Out-Null
+  $notesDir = Join-Path $LorekeeperHome "notes\$Repo"
+  $notesCount = (Get-ChildItem -Path $notesDir -Filter *.md -File -ErrorAction SilentlyContinue | Measure-Object).Count
+  $wmFile = Join-Path $watermarkDir $Repo
+  $lastWm = if (Test-Path $wmFile) { [int](Get-Content -Raw $wmFile).Trim() } else { 0 }
+  if (($notesCount - $lastWm) -ge 15) {
+    New-Item -ItemType File -Path (Join-Path $pendingDir $Repo) -Force | Out-Null
+  }
+}
 '@
 
 $workerPath = Join-Path $env:TEMP ("lorekeeper-autonote-" + [Guid]::NewGuid().ToString('N') + ".ps1")
