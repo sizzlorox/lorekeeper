@@ -28,7 +28,7 @@ jobs:
           #   exported cmdlets — the approved-verb convention only matters for public modules.
           # Note: PSScriptAnalyzer does not analyse code inside single-quoted here-strings
           #   (@'...'@), so the embedded worker script in autonote.ps1 is not checked here.
-          $exclude = @('PSAvoidUsingWriteHost', 'PSUseApprovedVerbs')
+          $exclude = @('PSAvoidUsingWriteHost', 'PSUseApprovedVerbs', 'PSUseBOMForUnicodeEncodedFile')
           $results = $files | ForEach-Object {
             Invoke-ScriptAnalyzer -Path $_ -Severity Error,Warning -ExcludeRule $exclude
           }

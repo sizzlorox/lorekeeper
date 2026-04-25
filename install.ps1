@@ -171,9 +171,9 @@ $reindexCmd  = "powershell -NoProfile -ExecutionPolicy Bypass -File `"$ClaudeDir
 $autonoteCmd = "powershell -NoProfile -ExecutionPolicy Bypass -File `"$ClaudeDir\hooks\lorekeeper-autonote.ps1`""
 
 function Ensure-HookEntry {
-  param($Root, [string]$Event, [string]$Cmd, [string]$Matcher)
+  param($Root, [string]$HookEvent, [string]$Cmd, [string]$Matcher)
   $existing = @()
-  if ($Root.hooks.PSObject.Properties[$Event]) { $existing = @($Root.hooks.$Event) }
+  if ($Root.hooks.PSObject.Properties[$HookEvent]) { $existing = @($Root.hooks.$HookEvent) }
   # drop previous entries pointing at same command
   $filtered = @($existing | Where-Object {
     $hasMatch = $false
@@ -186,7 +186,7 @@ function Ensure-HookEntry {
   if ($Matcher) { $entryProps.matcher = $Matcher }
   $entryProps.hooks = @([pscustomobject]@{ type = 'command'; command = $Cmd })
   $filtered += [pscustomobject]$entryProps
-  $Root.hooks | Add-Member -NotePropertyName $Event -NotePropertyValue $filtered -Force
+  $Root.hooks | Add-Member -NotePropertyName $HookEvent -NotePropertyValue $filtered -Force
 }
 
 Ensure-HookEntry -Root $json -Event 'SessionStart'     -Cmd $primeCmd    -Matcher $null
@@ -213,7 +213,7 @@ if ($null -eq $current) { $current = '' }
 if ($current.Contains($start)) {
   $pattern = "(?s)" + [regex]::Escape($start) + ".*?" + [regex]::Escape($end)
   $replacement = "$start`r`n$block`r`n$end"
-  $new = [regex]::Replace($current, $pattern, { param($m) $replacement })
+  $new = [regex]::Replace($current, $pattern, { $replacement })
   Write-Utf8NoBom $ClaudeMd $new
 } else {
   $sep = ''
