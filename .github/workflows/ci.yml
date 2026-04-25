@@ -13,3 +13,28 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y shellcheck
           shellcheck install.sh uninstall.sh hooks/*.sh qmd/*.sh bin/lorekeeper
+
+  psscriptanalyzer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Install-Module PSScriptAnalyzer -Force -Scope CurrentUser -ErrorAction Stop
+          $files = Get-ChildItem -Recurse -Filter '*.ps1' | Select-Object -ExpandProperty FullName
+          # PSAvoidUsingWriteHost: Write-Host intentional for coloured distill/status output.
+          # PSUseApprovedVerbs: helper functions (Ensure-*, Emit-*, Is-*) are private, not
+          #   exported cmdlets — the approved-verb convention only matters for public modules.
+          # Note: PSScriptAnalyzer does not analyse code inside single-quoted here-strings
+          #   (@'...'@), so the embedded worker script in autonote.ps1 is not checked here.
+          $exclude = @('PSAvoidUsingWriteHost', 'PSUseApprovedVerbs')
+          $results = $files | ForEach-Object {
+            Invoke-ScriptAnalyzer -Path $_ -Severity Error,Warning -ExcludeRule $exclude
+          }
+          if ($results) {
+            $results | ForEach-Object {
+              Write-Host "$($_.ScriptPath):$($_.Line) [$($_.Severity)] $($_.RuleName): $($_.Message)"
+            }
+            exit 1
+          }
