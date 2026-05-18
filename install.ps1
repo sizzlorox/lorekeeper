@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 <#
 .SYNOPSIS
   lorekeeper installer (Windows) — idempotent.
@@ -244,7 +244,6 @@ if (-not $NoClaude) {
 # --- omp plugin install ---
 $OmpInstalled = $false
 $OmpPluginPath = Join-Path $ScriptDir 'omp-plugin'
-$OmpPluginInstalled = $null
 if (-not $NoOmp -and (Test-Path $OmpPluginPath)) {
   $ompCli = Get-Command omp -ErrorAction SilentlyContinue
   $bunCli = Get-Command bun -ErrorAction SilentlyContinue
