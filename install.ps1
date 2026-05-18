@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
   lorekeeper installer (Windows) — idempotent.
@@ -207,10 +207,10 @@ if (-not $NoClaude) {
     $Root.hooks | Add-Member -NotePropertyName $HookEvent -NotePropertyValue $filtered -Force
   }
 
-  Ensure-HookEntry -Root $json -Event 'SessionStart'     -Cmd $primeCmd    -Matcher $null
-  Ensure-HookEntry -Root $json -Event 'UserPromptSubmit' -Cmd $primeCmd    -Matcher $null
-  Ensure-HookEntry -Root $json -Event 'PostToolUse'      -Cmd $reindexCmd  -Matcher 'Write|Edit'
-  Ensure-HookEntry -Root $json -Event 'SessionEnd'       -Cmd $autonoteCmd -Matcher $null
+  Ensure-HookEntry -Root $json -HookEvent 'SessionStart'     -Cmd $primeCmd    -Matcher $null
+  Ensure-HookEntry -Root $json -HookEvent 'UserPromptSubmit' -Cmd $primeCmd    -Matcher $null
+  Ensure-HookEntry -Root $json -HookEvent 'PostToolUse'      -Cmd $reindexCmd  -Matcher 'Write|Edit'
+  Ensure-HookEntry -Root $json -HookEvent 'SessionEnd'       -Cmd $autonoteCmd -Matcher $null
 
   Write-Utf8NoBom $Settings ($json | ConvertTo-Json -Depth 20)
 
