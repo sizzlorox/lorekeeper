@@ -9,7 +9,7 @@
 set -e
 
 CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-LOREKEEPER_HOME="$(cat "$CLAUDE_DIR/.lorekeeper-home" 2>/dev/null || echo "$HOME/.local/share/lorekeeper")"
+LOREKEEPER_HOME="${LOREKEEPER_HOME:-$(cat "$CLAUDE_DIR/.lorekeeper-home" 2>/dev/null || echo "$HOME/.local/share/lorekeeper")}"
 
 input="$(cat)"
 cwd="$(jq -r '.cwd // empty' <<<"$input" 2>/dev/null)"

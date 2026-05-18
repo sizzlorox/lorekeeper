@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 # lorekeeper: SessionStart / UserPromptSubmit hook (Windows/PowerShell)
 # Reads cwd from Claude Code's JSON input, resolves the repo name, and emits
 # an index of existing notes/docs. stdout becomes additional context.
@@ -7,7 +7,9 @@ $ErrorActionPreference = 'SilentlyContinue'
 
 $ClaudeDir = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Path $env:USERPROFILE '.claude' }
 $homeFile = Join-Path $ClaudeDir '.lorekeeper-home'
-$LorekeeperHome = if (Test-Path $homeFile) { (Get-Content -Raw $homeFile).Trim() } else { Join-Path $env:LOCALAPPDATA 'lorekeeper' }
+$LorekeeperHome = if ($env:LOREKEEPER_HOME) { $env:LOREKEEPER_HOME }
+                  elseif (Test-Path $homeFile) { (Get-Content -Raw $homeFile).Trim() }
+                  else { Join-Path $env:LOCALAPPDATA 'lorekeeper' }
 
 $inputRaw = [Console]::In.ReadToEnd()
 $data = $null

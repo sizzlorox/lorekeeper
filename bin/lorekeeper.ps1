@@ -1,11 +1,17 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 # lorekeeper CLI (Windows/PowerShell) — wrapper around qmd + filesystem ops.
 
 $ErrorActionPreference = 'Stop'
 
 $ClaudeDir = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Path $env:USERPROFILE '.claude' }
-$homeFile = Join-Path $ClaudeDir '.lorekeeper-home'
-$LorekeeperHome = if (Test-Path $homeFile) { (Get-Content -Raw $homeFile).Trim() } else { Join-Path $env:LOCALAPPDATA 'lorekeeper' }
+$OmpDir    = if ($env:OMP_CONFIG_DIR)    { $env:OMP_CONFIG_DIR }    else { Join-Path $env:USERPROFILE '.omp' }
+$ompMarker    = Join-Path $OmpDir '.lorekeeper-home'
+$claudeMarker = Join-Path $ClaudeDir '.lorekeeper-home'
+$LorekeeperHome =
+  if ($env:LOREKEEPER_HOME)         { $env:LOREKEEPER_HOME }
+  elseif (Test-Path $ompMarker)     { (Get-Content -Raw $ompMarker).Trim() }
+  elseif (Test-Path $claudeMarker)  { (Get-Content -Raw $claudeMarker).Trim() }
+  else                              { Join-Path $env:LOCALAPPDATA 'lorekeeper' }
 
 $TemplateNote = Join-Path $LorekeeperHome '.template-note.md'
 
@@ -114,26 +120,54 @@ switch ($cmd) {
       else { Write-Output '  (none registered)' }
     } else { Write-Output '  (none registered)' }
     Write-Output ''
-    Write-Output 'hooks:'
-    foreach ($h in 'lorekeeper-prime.ps1','lorekeeper-reindex.ps1','lorekeeper-autonote.ps1') {
-      $p = Join-Path $ClaudeDir "hooks\$h"
+    Write-Output 'hooks (canonical at $LOREKEEPER_HOME\hooks):'
+    foreach ($h in 'prime.ps1','reindex.ps1','autonote.ps1') {
+      $p = Join-Path $LorekeeperHome "hooks\$h"
       if (Test-Path $p) { Write-Output "  $h OK" } else { Write-Output "  $h MISSING" }
     }
-    $autonoteOff = (Test-Path (Join-Path $LorekeeperHome '.autonote-off')) -or ($env:LOREKEEPER_AUTONOTE -eq 'off')
-    Write-Output ("autonote:    " + $(if ($autonoteOff) { 'disabled' } else { 'enabled' }))
     Write-Output ''
-    $claudeMd = Join-Path $ClaudeDir 'CLAUDE.md'
-    $blockOk  = $false
-    if (Test-Path $claudeMd) {
-      $blockOk = (Select-String -LiteralPath $claudeMd -SimpleMatch '<!-- LOREKEEPER:START -->' -Quiet)
+    Write-Output 'claude:'
+    if (Test-Path $ClaudeDir) {
+      foreach ($h in 'lorekeeper-prime.ps1','lorekeeper-reindex.ps1','lorekeeper-autonote.ps1') {
+        $p = Join-Path $ClaudeDir "hooks\$h"
+        if (Test-Path $p) { Write-Output "  $h OK" } else { Write-Output "  $h MISSING" }
+      }
+      $claudeMd = Join-Path $ClaudeDir 'CLAUDE.md'
+      $blockOk = $false
+      if (Test-Path $claudeMd) {
+        $blockOk = (Select-String -LiteralPath $claudeMd -SimpleMatch '<!-- LOREKEEPER:START -->' -Quiet)
+      }
+      Write-Output ("  CLAUDE.md policy block: " + $(if ($blockOk) { 'present' } else { 'MISSING' }))
+    } else {
+      Write-Output "  (not installed - $ClaudeDir missing)"
     }
-    Write-Output ("CLAUDE.md policy block: " + $(if ($blockOk) { 'present' } else { 'MISSING' }))
+    Write-Output ''
+    Write-Output 'omp:'
+    if (Test-Path $OmpDir) {
+      $pluginLink = Join-Path $OmpDir 'plugins\node_modules\@lorekeeper\omp-plugin'
+      if (Test-Path $pluginLink) {
+        Write-Output "  plugin: linked ($pluginLink)"
+      } else {
+        Write-Output "  plugin: NOT LINKED"
+      }
+      $agentsMd = Join-Path $OmpDir 'AGENTS.md'
+      $agentsBlockOk = $false
+      if (Test-Path $agentsMd) {
+        $agentsBlockOk = (Select-String -LiteralPath $agentsMd -SimpleMatch '<!-- LOREKEEPER:START -->' -Quiet)
+      }
+      Write-Output ("  AGENTS.md policy block: " + $(if ($agentsBlockOk) { 'present' } else { 'MISSING' }))
+    } else {
+      Write-Output "  (not installed - $OmpDir missing)"
+    }
+    Write-Output ''
+    $autonoteOff = (Test-Path (Join-Path $LorekeeperHome '.autonote-off')) -or ($env:LOREKEEPER_AUTONOTE -eq 'off')
+    Write-Output ("autonote: " + $(if ($autonoteOff) { 'disabled' } else { 'enabled' }))
     $cavemanOn = $false
     if (Get-Command claude -ErrorAction SilentlyContinue) {
       $pl = & claude plugin list 2>$null
       if ($pl -and ($pl -match 'caveman')) { $cavemanOn = $true }
     }
-    Write-Output ("caveman:     " + $(if ($cavemanOn) { 'active' } else { 'not installed' }))
+    Write-Output ("caveman:  " + $(if ($cavemanOn) { 'active' } else { 'not installed' }))
     break
   }
 

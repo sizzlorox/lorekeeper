@@ -1,6 +1,6 @@
 # lorekeeper
 
-Autonomous per-repo memory for Claude Code, backed by [qmd](https://github.com/tobi/qmd) for local semantic search and [caveman](https://github.com/JuliusBrussee/caveman) for token-efficient prose. Claude reads existing notes at session start, writes new ones when it learns something worth remembering, and re-indexes automatically — you never have to manage it by hand.
+Autonomous per-repo memory for Claude Code and [oh-my-pi (omp)](https://github.com/can1357/oh-my-pi), backed by [qmd](https://github.com/tobi/qmd) for local semantic search and [caveman](https://github.com/JuliusBrussee/caveman) for token-efficient prose. Each agent reads existing notes at session start, writes new ones when it learns something worth remembering, and re-indexes automatically — you never have to manage it by hand.
 
 ```
 $XDG_DATA_HOME/lorekeeper/
@@ -52,6 +52,8 @@ Optional flags:
 ./install.sh --with-caveman         # also install caveman plugin
 ./install.sh --lorekeeper-home PATH # override data dir (default: $XDG_DATA_HOME/lorekeeper)
 ./install.sh --no-embed-bootstrap   # skip initial qmd embed (faster install, do it later)
+./install.sh --no-claude            # skip Claude Code wiring (omp-only install)
+./install.sh --no-omp               # skip omp plugin install (Claude-only install)
 ```
 
 ### Windows
@@ -71,6 +73,8 @@ Flags mirror the bash installer:
 .\install.ps1 -WithCaveman
 .\install.ps1 -LorekeeperHome C:\path\to\data
 .\install.ps1 -NoEmbedBootstrap
+.\install.ps1 -NoClaude              # skip Claude Code wiring (omp-only install)
+.\install.ps1 -NoOmp                 # skip omp plugin install (Claude-only install)
 ```
 
 Defaults on Windows:
@@ -120,6 +124,50 @@ lorekeeper distill [repo]      Synthesize durable docs (architecture/runbook/onb
                                inside the repo's git worktree. Costs a few $ per run.
 lorekeeper ls [repo]           List notes/docs per repo
 ```
+
+## omp support
+
+lorekeeper installs in two surfaces concurrently:
+
+| surface     | trigger             | what gets wired                                                              |
+| ----------- | ------------------- | ---------------------------------------------------------------------------- |
+| Claude Code | always (unless `--no-claude`)   | hook shims under `~/.claude/hooks/`, `settings.json` entries, `CLAUDE.md` policy block |
+| omp         | when `omp` and `bun` are on PATH (unless `--no-omp`) | TS plugin built and symlinked into `~/.omp/plugins/node_modules/@lorekeeper/omp-plugin`, `AGENTS.md` policy block, `~/.omp/.lorekeeper-home` marker |
+
+Both surfaces share the **canonical hooks** that the installer drops into
+`$LOREKEEPER_HOME/hooks/{prime,reindex,autonote}.{ps1,sh}`. The Claude branch
+copies them into `~/.claude/hooks/lorekeeper-*.{ps1,sh}` so Claude's
+`settings.json` references resolve, while the omp plugin invokes the
+canonical scripts directly with a Claude-Code-shaped JSON envelope on
+stdin — one script set, two harnesses.
+
+### Coexistence with omp's Hindsight
+
+omp ships its own per-session memory ([Hindsight](https://github.com/can1357/oh-my-pi)).
+lorekeeper does not touch it; the two run side by side. lorekeeper's value
+on top of Hindsight is the durable side: qmd-backed semantic search,
+`distill`-generated architecture/runbook docs, and ADRs.
+
+### omp plugin internals
+
+The plugin lives at `omp-plugin/` in this repo and is published structurally
+as `@lorekeeper/omp-plugin`. Event mapping:
+
+| omp event           | action                                                                        |
+| ------------------- | ----------------------------------------------------------------------------- |
+| `session_start`     | spawn `hooks/prime` with `{cwd, session_id, hook_event_name: "SessionStart"}` |
+| `turn_end`          | append the turn (user/assistant + tool results) to a synthetic JSONL transcript |
+| `tool_result`       | on `write`/`edit`/`multiedit`/`ast_edit`/`apply_patch` success inside `$LOREKEEPER_HOME` → spawn `hooks/reindex` |
+| `session_shutdown`  | spawn `hooks/autonote` with the synthetic transcript path                       |
+
+Transcripts live under `$LOREKEEPER_HOME/transcripts/<session-id>.jsonl` in
+the same shape Claude Code produces, so `autonote` runs unmodified across
+both harnesses.
+
+The autonote classifier still shells out to `claude -p` for Haiku/Sonnet
+calls. If you only have omp installed and want autonote to keep working,
+install the Claude CLI as a soft dependency, or disable autonote with
+`touch $LOREKEEPER_HOME/.autonote-off`.
 
 ## How caveman fits
 

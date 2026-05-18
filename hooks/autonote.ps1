@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 # lorekeeper: SessionEnd hook (Windows) — autonomous extraction.
 # Structural gate -> surface step -> Haiku classifier -> Sonnet drafter routes to
 # notes/, docs/<feature>.md, docs/adr/ADR-NNNN-<slug>.md, or notes/shared/.
@@ -10,7 +10,9 @@ if ($env:LOREKEEPER_AUTONOTE_CHILD -eq '1') { exit 0 }
 
 $ClaudeDir = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Path $env:USERPROFILE '.claude' }
 $homeFile  = Join-Path $ClaudeDir '.lorekeeper-home'
-$LorekeeperHome = if (Test-Path $homeFile) { (Get-Content -Raw $homeFile).Trim() } else { Join-Path $env:LOCALAPPDATA 'lorekeeper' }
+$LorekeeperHome = if ($env:LOREKEEPER_HOME) { $env:LOREKEEPER_HOME }
+                  elseif (Test-Path $homeFile) { (Get-Content -Raw $homeFile).Trim() }
+                  else { Join-Path $env:LOCALAPPDATA 'lorekeeper' }
 
 if (Test-Path (Join-Path $LorekeeperHome '.autonote-off')) { exit 0 }
 if ($env:LOREKEEPER_AUTONOTE -eq 'off') { exit 0 }

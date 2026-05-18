@@ -7,7 +7,9 @@ $ErrorActionPreference = 'SilentlyContinue'
 
 $ClaudeDir = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Path $env:USERPROFILE '.claude' }
 $homeFile = Join-Path $ClaudeDir '.lorekeeper-home'
-$LorekeeperHome = if (Test-Path $homeFile) { (Get-Content -Raw $homeFile).Trim() } else { Join-Path $env:LOCALAPPDATA 'lorekeeper' }
+$LorekeeperHome = if ($env:LOREKEEPER_HOME) { $env:LOREKEEPER_HOME }
+                  elseif (Test-Path $homeFile) { (Get-Content -Raw $homeFile).Trim() }
+                  else { Join-Path $env:LOCALAPPDATA 'lorekeeper' }
 
 $inputRaw = [Console]::In.ReadToEnd()
 $data = $null

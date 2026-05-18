@@ -4,7 +4,9 @@
 set -euo pipefail
 
 CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-LOREKEEPER_HOME="$(cat "$CLAUDE_DIR/.lorekeeper-home" 2>/dev/null || echo "$HOME/.local/share/lorekeeper")"
+OMP_DIR="${OMP_CONFIG_DIR:-$HOME/.omp}"
+# Resolve $LOREKEEPER_HOME from env, the omp marker, the Claude marker, then default.
+LOREKEEPER_HOME="${LOREKEEPER_HOME:-$(cat "$OMP_DIR/.lorekeeper-home" 2>/dev/null || cat "$CLAUDE_DIR/.lorekeeper-home" 2>/dev/null || echo "$HOME/.local/share/lorekeeper")}"
 
 # shellcheck disable=SC2016  # $EDITOR / $LOREKEEPER_HOME are literal in help text
 USAGE='lorekeeper <command> [args]
@@ -97,24 +99,48 @@ case "$cmd" in
     else printf "NOT FOUND\n"; fi
     printf "collections: "
     qmd collection list 2>/dev/null | grep -E "lorekeeper-(notes|docs)" || echo "(none registered)"
-    printf "\nhooks:\n"
-    for h in lorekeeper-prime.sh lorekeeper-reindex.sh lorekeeper-autonote.sh; do
-      if [[ -x "$CLAUDE_DIR/hooks/$h" ]]; then printf "  %s\n" "$h ✓"
-      else printf "  %s\n" "$h MISSING"; fi
+    printf "\nhooks (canonical at \$LOREKEEPER_HOME/hooks):\n"
+    for h in prime.sh reindex.sh autonote.sh; do
+      if [[ -x "$LOREKEEPER_HOME/hooks/$h" ]]; then printf "  %s ✓\n" "$h"
+      else printf "  %s MISSING\n" "$h"; fi
     done
+    printf "\nclaude:\n"
+    if [[ -d "$CLAUDE_DIR" ]]; then
+      for h in lorekeeper-prime.sh lorekeeper-reindex.sh lorekeeper-autonote.sh; do
+        if [[ -x "$CLAUDE_DIR/hooks/$h" ]]; then printf "  %s ✓\n" "$h"
+        else printf "  %s MISSING\n" "$h"; fi
+      done
+      if grep -qF "<!-- LOREKEEPER:START -->" "$CLAUDE_DIR/CLAUDE.md" 2>/dev/null; then
+        printf "  CLAUDE.md policy block: present\n"
+      else
+        printf "  CLAUDE.md policy block: MISSING\n"
+      fi
+    else
+      printf "  (not installed — %s missing)\n" "$CLAUDE_DIR"
+    fi
+    printf "\nomp:\n"
+    if [[ -d "$OMP_DIR" ]]; then
+      omp_plugin_link="$OMP_DIR/plugins/node_modules/@lorekeeper/omp-plugin"
+      if [[ -L "$omp_plugin_link" || -e "$omp_plugin_link" ]]; then
+        printf "  plugin: linked (%s)\n" "$omp_plugin_link"
+      else
+        printf "  plugin: NOT LINKED\n"
+      fi
+      if grep -qF "<!-- LOREKEEPER:START -->" "$OMP_DIR/AGENTS.md" 2>/dev/null; then
+        printf "  AGENTS.md policy block: present\n"
+      else
+        printf "  AGENTS.md policy block: MISSING\n"
+      fi
+    else
+      printf "  (not installed — %s missing)\n" "$OMP_DIR"
+    fi
     printf "\nautonote: "
     if [[ -e "$LOREKEEPER_HOME/.autonote-off" ]] || [[ "${LOREKEEPER_AUTONOTE:-on}" == "off" ]]; then
       echo "disabled"
     else
       echo "enabled"
     fi
-    printf "\nCLAUDE.md policy block: "
-    if grep -qF "<!-- LOREKEEPER:START -->" "$CLAUDE_DIR/CLAUDE.md" 2>/dev/null; then
-      echo "present"
-    else
-      echo "MISSING"
-    fi
-    printf "caveman:     "
+    printf "caveman:  "
     if command -v claude >/dev/null && claude plugin list 2>/dev/null | grep -qi caveman; then
       echo "active"
     else

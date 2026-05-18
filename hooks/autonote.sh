@@ -9,7 +9,7 @@ set -e
 [[ "${LOREKEEPER_AUTONOTE_CHILD:-}" == "1" ]] && exit 0
 
 CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-LOREKEEPER_HOME="$(cat "$CLAUDE_DIR/.lorekeeper-home" 2>/dev/null || echo "$HOME/.local/share/lorekeeper")"
+LOREKEEPER_HOME="${LOREKEEPER_HOME:-$(cat "$CLAUDE_DIR/.lorekeeper-home" 2>/dev/null || echo "$HOME/.local/share/lorekeeper")}"
 LOG="$LOREKEEPER_HOME/.autonote.log"
 SKIPPED_LOG="$LOREKEEPER_HOME/.skipped.log"
 
