@@ -21,6 +21,8 @@ $XDG_DATA_HOME/lorekeeper/
 - **Distills on demand.** `lorekeeper distill` runs inside a repo and spawns a Sonnet session with Read/Glob/Grep/Write to synthesize durable engineering docs from accumulated notes + the codebase: `architecture.md`, `onboarding.md`, `runbook.md`, `conventions.md`, `api.md`. Use `<!-- AUTODOC:START -->` / `<!-- AUTODOC:END -->` sentinels in any hand-curated doc to pin sections the distill pass is allowed to rewrite. Expensive (several $ per repo) and slow (minutes) — run occasionally, not on every session.
 - **Re-indexes itself.** A `PostToolUse` hook runs `qmd update && qmd embed` in the background whenever Claude writes under the notes/docs tree. The autonote hook triggers the same reindex directly after it writes.
 - **Uses caveman if present.** Ships a caveman-compressed `CLAUDE.md` block to cut input tokens on every session, and instructs Claude to write notes in caveman-speak so retrieval is cheap too.
+- **Hands off context on compaction.** A `PreCompact` hook fires when the session context is about to be summarized. It reads your repo's lorekeeper notes from disk and injects them — plus six handoff rules — directly into the compaction prompt. The summarizer is told to preserve decision rationale, exact file paths, error messages, task status, blockers, and prior compaction summaries. No LLM calls, disk reads only, completes in under 2 seconds. On omp, the `session.compacting` handler does the same injection via context lines.
+
 
 ## Requirements
 
@@ -106,7 +108,7 @@ Verify everything is wired:
 lorekeeper status
 # qmd: installed
 # collections: lorekeeper-notes, lorekeeper-docs
-# hooks: lorekeeper-prime ✓  lorekeeper-reindex ✓  lorekeeper-autonote ✓
+# hooks: lorekeeper-prime ✓  lorekeeper-reindex ✓  lorekeeper-autonote ✓  lorekeeper-precompact ✓
 # autonote: enabled
 # caveman: detected (compressed CLAUDE.md in use)
 ```
@@ -135,7 +137,7 @@ lorekeeper installs in two surfaces concurrently:
 | omp         | when `omp` and `bun` are on PATH (unless `--no-omp`) | TS plugin built and symlinked into `~/.omp/plugins/node_modules/@lorekeeper/omp-plugin`, `AGENTS.md` policy block, `~/.omp/.lorekeeper-home` marker |
 
 Both surfaces share the **canonical hooks** that the installer drops into
-`$LOREKEEPER_HOME/hooks/{prime,reindex,autonote}.{ps1,sh}`. The Claude branch
+`$LOREKEEPER_HOME/hooks/{prime,reindex,autonote,precompact}.{ps1,sh}`. The Claude branch
 copies them into `~/.claude/hooks/lorekeeper-*.{ps1,sh}` so Claude's
 `settings.json` references resolve, while the omp plugin invokes the
 canonical scripts directly with a Claude-Code-shaped JSON envelope on
@@ -158,6 +160,7 @@ as `@lorekeeper/omp-plugin`. Event mapping:
 | `session_start`     | spawn `hooks/prime` with `{cwd, session_id, hook_event_name: "SessionStart"}` |
 | `turn_end`          | append the turn (user/assistant + tool results) to a synthetic JSONL transcript |
 | `tool_result`       | on `write`/`edit`/`multiedit`/`ast_edit`/`apply_patch` success inside `$LOREKEEPER_HOME` → spawn `hooks/reindex` |
+| `session.compacting`| inject note content + handoff rules as context lines into the compaction prompt |
 | `session_shutdown`  | spawn `hooks/autonote` with the synthetic transcript path                       |
 
 Transcripts live under `$LOREKEEPER_HOME/transcripts/<session-id>.jsonl` in
@@ -206,6 +209,18 @@ SessionStart hook ─► reads git toplevel ─► ls $LOREKEEPER_HOME/{notes,do
     │                                          ▼
     │               if memory exists: injects index → Claude queries via qmd MCP
     │               if empty:         stays silent  → no hint, no noise
+    ▼
+Context compaction fires → PreCompact hook
+    │
+    ├─► reads all notes/docs for <repo> from disk (capped at 10 files)
+    ├─► injects handoff rules:
+    │     1. preserve WHY behind decisions
+    │     2. keep exact file paths and line numbers
+    │     3. keep error messages / stack traces verbatim
+    │     4. state task status (complete / in-progress / blocked)
+    │     5. carry forward prior compaction summaries cumulatively
+    │     6. preserve blockers and dependencies
+    └─► content + rules → appended to compaction prompt
     ▼
 Claude works normally
     │
