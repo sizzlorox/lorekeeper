@@ -133,12 +133,16 @@ Copy-Item -Force (Join-Path $ScriptDir 'hooks\prime.ps1')    (Join-Path $Lorekee
 Copy-Item -Force (Join-Path $ScriptDir 'hooks\reindex.ps1')  (Join-Path $LorekeeperHome 'hooks\reindex.ps1')
 Copy-Item -Force (Join-Path $ScriptDir 'hooks\autonote.ps1') (Join-Path $LorekeeperHome 'hooks\autonote.ps1')
 Copy-Item -Force (Join-Path $ScriptDir 'hooks\compact.ps1') (Join-Path $LorekeeperHome 'hooks\compact.ps1')
+Copy-Item -Force (Join-Path $ScriptDir 'hooks\precompact.ps1') (Join-Path $LorekeeperHome 'hooks\precompact.ps1')
+
 
 # bash siblings too (Git Bash users, WSL, etc.)
 Copy-Item -Force (Join-Path $ScriptDir 'hooks\prime.sh')     (Join-Path $LorekeeperHome 'hooks\prime.sh')    -ErrorAction SilentlyContinue
 Copy-Item -Force (Join-Path $ScriptDir 'hooks\reindex.sh')   (Join-Path $LorekeeperHome 'hooks\reindex.sh')  -ErrorAction SilentlyContinue
 Copy-Item -Force (Join-Path $ScriptDir 'hooks\autonote.sh')  (Join-Path $LorekeeperHome 'hooks\autonote.sh') -ErrorAction SilentlyContinue
 Copy-Item -Force (Join-Path $ScriptDir 'hooks\compact.sh')  (Join-Path $LorekeeperHome 'hooks\compact.sh') -ErrorAction SilentlyContinue
+Copy-Item -Force (Join-Path $ScriptDir 'hooks\precompact.sh') (Join-Path $LorekeeperHome 'hooks\precompact.sh') -ErrorAction SilentlyContinue
+
 
 
 # --- Claude Code wiring ---
@@ -150,6 +154,8 @@ if (-not $NoClaude) {
   Copy-Item -Force (Join-Path $LorekeeperHome 'hooks\reindex.ps1')  (Join-Path $ClaudeDir 'hooks\lorekeeper-reindex.ps1')
   Copy-Item -Force (Join-Path $LorekeeperHome 'hooks\autonote.ps1') (Join-Path $ClaudeDir 'hooks\lorekeeper-autonote.ps1')
   Copy-Item -Force (Join-Path $LorekeeperHome 'hooks\compact.ps1') (Join-Path $ClaudeDir 'hooks\lorekeeper-compact.ps1')
+  Copy-Item -Force (Join-Path $LorekeeperHome 'hooks\precompact.ps1') (Join-Path $ClaudeDir 'hooks\lorekeeper-precompact.ps1')
+
 
 }
 
@@ -194,6 +200,8 @@ if (-not $NoClaude) {
   $reindexCmd  = "powershell -NoProfile -ExecutionPolicy Bypass -File `"$ClaudeDir\hooks\lorekeeper-reindex.ps1`""
   $autonoteCmd = "powershell -NoProfile -ExecutionPolicy Bypass -File `"$ClaudeDir\hooks\lorekeeper-autonote.ps1`""
   $compactCmd  = "powershell -NoProfile -ExecutionPolicy Bypass -File `"$ClaudeDir\hooks\lorekeeper-compact.ps1`""
+  $precompactCmd = "powershell -NoProfile -ExecutionPolicy Bypass -File `"$ClaudeDir\hooks\lorekeeper-precompact.ps1`""
+
 
 
   function Ensure-HookEntry {
@@ -223,6 +231,8 @@ if (-not $NoClaude) {
   Ensure-HookEntry -Root $json -HookEvent 'PostToolUse'      -Cmd $reindexCmd  -Matcher 'Write|Edit'
   Ensure-HookEntry -Root $json -HookEvent 'SessionEnd'       -Cmd $autonoteCmd -Matcher $null
   Ensure-HookEntry -Root $json -HookEvent 'PostCompact' -Cmd $compactCmd -Matcher $null -Async
+  Ensure-HookEntry -Root $json -HookEvent 'PreCompact' -Cmd $precompactCmd -Matcher $null
+
 
 
   Write-Utf8NoBom $Settings ($json | ConvertTo-Json -Depth 20)
@@ -368,9 +378,10 @@ Write-Host ''
 Write-Host 'installed.' -ForegroundColor Green
 Write-Host ''
 Write-Host "  home:     $LorekeeperHome"
-Write-Host ('  hooks:    ' + $LorekeeperHome + '\hooks\{prime,reindex,autonote,compact}.ps1 (canonical)')
+Write-Host ('  hooks:    ' + $LorekeeperHome + '\hooks\{prime,reindex,autonote,precompact,compact}.ps1 (canonical)')
+
 if (-not $NoClaude) {
-  Write-Host ('  claude:   ' + $ClaudeDir + '\hooks\lorekeeper-{prime,reindex,autonote,compact}.ps1')
+  Write-Host ('  claude:   ' + $ClaudeDir + '\hooks\lorekeeper-{prime,reindex,autonote,precompact,compact}.ps1')
   Write-Host "  policy:   $ClaudeMd ($ClaudeTemplateKey)"
 } else {
   Write-Host "  claude:   skipped (-NoClaude)"

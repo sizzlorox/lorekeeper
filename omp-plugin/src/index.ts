@@ -15,6 +15,17 @@ import { runHook } from "./dispatch.js";
 import { TranscriptWriter } from "./transcript.js";
 import { resolveLorekeeperHome } from "./paths.js";
 
+const HANDOFF_RULES: readonly string[] = [
+  "When summarizing this session for compaction, follow these rules:",
+  "1. Preserve the WHY behind every decision — not just what was done, but why that approach was chosen and what alternatives were rejected.",
+  "2. Keep exact file paths and line numbers that were read or modified.",
+  "3. Keep error messages and stack traces verbatim when they informed a diagnosis or fix.",
+  "4. State current task status: what is complete, what is in progress, what is blocked and by what.",
+  "5. If this context already contains a previous compaction summary, carry its key points forward — do not discard prior history.",
+  "6. Preserve any blockers and dependencies between tasks.",
+];
+
+
 /**
  * lorekeeper bindings for omp's extension runtime.
  *
@@ -145,37 +156,54 @@ export default function lorekeeperPlugin(pi: ExtensionAPI): void {
     }
     if (!repo) return;
 
-    // Collect note titles from the notes directory for this repo.
     const notesDir = path.join(home, "notes", repo);
     const docsDir = path.join(home, "docs", repo);
-    const contextLines: string[] = [];
 
-    for (const dir of [notesDir, docsDir]) {
+    const contextLines: string[] = [
+      "== LOREKEEPER: HANDOFF CONTEXT ==",
+      "",
+      ...HANDOFF_RULES,
+      "",
+    ];
+
+    // Collect note/doc content from disk, capped at 10 files total.
+    const noteEntries: { label: string; name: string; content: string }[] = [];
+
+    for (const [dir, label] of [[notesDir, "note"], [docsDir, "doc"]] as const) {
       try {
         const entries = fs.readdirSync(dir).filter(f => f.endsWith(".md"));
-        for (const entry of entries.slice(0, 20)) {
+        for (const entry of entries) {
+          if (noteEntries.length >= 10) break;
           try {
-            const content = fs.readFileSync(path.join(dir, entry), "utf8");
-            // Extract just the title and topic from frontmatter
-            const topicMatch = content.match(/^topic:\s*(.+)$/m);
-            const titleMatch = content.match(/^#\s+(.+)$/m);
-            if (topicMatch || titleMatch) {
-              const label = dir === notesDir ? "lorekeeper-note" : "lorekeeper-doc";
-              contextLines.push(`[${label}] ${entry}: ${titleMatch?.[1] ?? topicMatch?.[1] ?? entry}`);
-            }
+            const raw = fs.readFileSync(path.join(dir, entry), "utf8");
+            noteEntries.push({
+              label,
+              name: entry.replace(/\.md$/, ""),
+              content: raw.length > 1500 ? raw.slice(0, 1500) : raw,
+            });
           } catch { /* skip unreadable files */ }
         }
       } catch { /* dir doesn't exist */ }
     }
 
-    if (contextLines.length > 0) {
-      return {
-        context: [
-          "The following lorekeeper notes exist for this repo (queryable via qmd):",
-          ...contextLines,
-        ],
-      };
+    if (noteEntries.length > 0) {
+      contextLines.push(
+        "The following notes from previous sessions may provide relevant context.",
+        "Preserve any insights that are relevant to the current work:",
+        "",
+      );
+      for (const entry of noteEntries) {
+        contextLines.push(
+          `### lorekeeper ${entry.label}: ${entry.name}`,
+          entry.content,
+          "",
+        );
+      }
     }
+
+    return {
+      context: contextLines,
+    };
   });
 
   pi.on("session_compact", async (event: SessionCompactEvent, ctx: ExtensionContext) => {

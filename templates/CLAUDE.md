@@ -92,3 +92,14 @@ polished reference.
   `qmd context add qmd://lorekeeper-notes/<repo> "<summary>"`.
 - If the user says "don't write notes" for a session, respect that and skip
   any explicit write request.
+
+### After compaction
+
+When the session context is compacted, a `PreCompact` hook injects lorekeeper
+note content and handoff rules into the compaction prompt. The compacted
+summary should already carry forward relevant prior learnings.
+
+If you notice a gap in context after compaction, query lorekeeper for the
+current repo's notes:
+- `mcp__qmd__query` with `collections: ["lorekeeper-notes", "lorekeeper-docs"]`
+  using task-relevant terms to find prior learnings that may have been lost.

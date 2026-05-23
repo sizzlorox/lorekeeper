@@ -106,6 +106,8 @@ install -m 0755 "$SCRIPT_DIR/hooks/prime.sh"    "$LOREKEEPER_HOME/hooks/prime.sh
 install -m 0755 "$SCRIPT_DIR/hooks/reindex.sh"  "$LOREKEEPER_HOME/hooks/reindex.sh"
 install -m 0755 "$SCRIPT_DIR/hooks/autonote.sh" "$LOREKEEPER_HOME/hooks/autonote.sh"
 install -m 0755 "$SCRIPT_DIR/hooks/compact.sh"  "$LOREKEEPER_HOME/hooks/compact.sh"
+install -m 0755 "$SCRIPT_DIR/hooks/precompact.sh"  "$LOREKEEPER_HOME/hooks/precompact.sh"
+
 
 # ps1 siblings ship alongside so a single $LOREKEEPER_HOME serves both
 # bash and PowerShell installs without re-running the platform installer.
@@ -113,6 +115,8 @@ install -m 0644 "$SCRIPT_DIR/hooks/prime.ps1"    "$LOREKEEPER_HOME/hooks/prime.p
 install -m 0644 "$SCRIPT_DIR/hooks/reindex.ps1"  "$LOREKEEPER_HOME/hooks/reindex.ps1"  2>/dev/null || true
 install -m 0644 "$SCRIPT_DIR/hooks/autonote.ps1" "$LOREKEEPER_HOME/hooks/autonote.ps1" 2>/dev/null || true
 install -m 0644 "$SCRIPT_DIR/hooks/compact.ps1"  "$LOREKEEPER_HOME/hooks/compact.ps1"  2>/dev/null || true
+install -m 0644 "$SCRIPT_DIR/hooks/precompact.ps1"  "$LOREKEEPER_HOME/hooks/precompact.ps1"  2>/dev/null || true
+
 
 
 # --- Claude Code wiring ---
@@ -124,6 +128,8 @@ if ! $NO_CLAUDE; then
   install -m 0755 "$LOREKEEPER_HOME/hooks/reindex.sh"  "$CLAUDE_DIR/hooks/lorekeeper-reindex.sh"
   install -m 0755 "$LOREKEEPER_HOME/hooks/autonote.sh" "$CLAUDE_DIR/hooks/lorekeeper-autonote.sh"
   install -m 0755 "$LOREKEEPER_HOME/hooks/compact.sh"  "$CLAUDE_DIR/hooks/lorekeeper-compact.sh"
+  install -m 0755 "$LOREKEEPER_HOME/hooks/precompact.sh"  "$CLAUDE_DIR/hooks/lorekeeper-precompact.sh"
+
 
 fi
 
@@ -191,7 +197,9 @@ if ! $NO_CLAUDE; then
   jq --arg prime    "bash $CLAUDE_DIR/hooks/lorekeeper-prime.sh" \
      --arg reindex  "bash $CLAUDE_DIR/hooks/lorekeeper-reindex.sh" \
      --arg autonote "bash $CLAUDE_DIR/hooks/lorekeeper-autonote.sh" \
+     --arg precompact "bash $CLAUDE_DIR/hooks/lorekeeper-precompact.sh" \
      --arg compact  "bash $CLAUDE_DIR/hooks/lorekeeper-compact.sh" '
+
      .hooks = (.hooks // {}) |
      .hooks.SessionStart = (
        (.hooks.SessionStart // [])
@@ -221,6 +229,13 @@ if ! $NO_CLAUDE; then
          ))
        | . + [ { "hooks": [ { "type": "command", "command": $autonote } ] } ]
      ) |
+     .hooks.PreCompact = (
+       (.hooks.PreCompact // [])
+       | map(select(
+           (.hooks // []) | map(.command) | any(. == $precompact) | not
+         ))
+       | . + [ { "hooks": [ { "type": "command", "command": $precompact } ] } ]
+     ) |
      .hooks.PostCompact = (
        (.hooks.PostCompact // [])
        | map(select(
@@ -228,6 +243,7 @@ if ! $NO_CLAUDE; then
          ))
        | . + [ { "hooks": [ { "type": "command", "command": $compact, "async": true } ] } ]
      )
+
   ' "$SETTINGS" > "$TMP"
 
   mv "$TMP" "$SETTINGS"
@@ -291,7 +307,7 @@ fi
 # --- done ---
 claude_line="skipped (--no-claude)"
 if ! $NO_CLAUDE; then
-  claude_line="$CLAUDE_DIR/hooks/{lorekeeper-prime,lorekeeper-reindex,lorekeeper-autonote,lorekeeper-compact}.sh"
+  claude_line="$CLAUDE_DIR/hooks/{lorekeeper-prime,lorekeeper-reindex,lorekeeper-autonote,lorekeeper-precompact,lorekeeper-compact}.sh"
 fi
 policy_line=""
 $NO_CLAUDE || policy_line="$CLAUDE_MD ($TEMPLATE_KEY)"
