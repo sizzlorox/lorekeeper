@@ -359,7 +359,7 @@ if (-not $NoOmp -and (Test-Path $OmpPluginPath)) {
 if (-not $NoEmbedBootstrap) {
   Say 'generating initial embeddings (this takes a moment on first run)'
   qmd embed
-  if ($LASTEXITCODE -ne 0) { Warn "qmd embed failed — run 'lorekeeper reindex' later" }
+  if ($LASTEXITCODE -ne 0) { Warn 'qmd embed failed - run ''lorekeeper reindex'' later' }
 }
 
 # --- done ---
@@ -368,15 +368,15 @@ Write-Host ''
 Write-Host 'installed.' -ForegroundColor Green
 Write-Host ''
 Write-Host "  home:     $LorekeeperHome"
-Write-Host "  hooks:    $LorekeeperHome\hooks\{prime,reindex,autonote,compact}.ps1 (canonical)"
+Write-Host ('  hooks:    ' + $LorekeeperHome + '\hooks\{prime,reindex,autonote,compact}.ps1 (canonical)')
 if (-not $NoClaude) {
-  Write-Host "  claude:   $ClaudeDir\hooks\lorekeeper-{prime,reindex,autonote}.ps1"
+  Write-Host ('  claude:   ' + $ClaudeDir + '\hooks\lorekeeper-{prime,reindex,autonote,compact}.ps1')
   Write-Host "  policy:   $ClaudeMd ($ClaudeTemplateKey)"
 } else {
   Write-Host "  claude:   skipped (-NoClaude)"
 }
 if ($OmpInstalled) {
-  Write-Host "  omp:      $OmpDir\plugins\node_modules\@lorekeeper\omp-plugin -> $OmpPluginPath"
+  Write-Host ('  omp:      ' + $OmpDir + '\plugins\node_modules\@lorekeeper\omp-plugin -> ' + $OmpPluginPath)
   Write-Host "  agents:   $OmpDir\AGENTS.md"
 } elseif (-not $NoOmp) {
   Write-Host "  omp:      not installed (CLI missing or skipped)"
@@ -388,4 +388,4 @@ Write-Host ''
 Write-Host 'next:'
 Write-Host '  1. open a Claude Code or omp session in a git repo'
 Write-Host "  2. run 'lorekeeper status' to verify wiring"
-Write-Host "  3. seed a repo: 'lorekeeper note <repo> architecture'"
+Write-Host '  3. seed a repo: ''lorekeeper note <repo> architecture'''
