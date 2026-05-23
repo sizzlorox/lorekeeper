@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 <#
 .SYNOPSIS
   lorekeeper installer (Windows) — idempotent.
@@ -132,10 +132,14 @@ Say "installing canonical hooks to $LorekeeperHome\hooks"
 Copy-Item -Force (Join-Path $ScriptDir 'hooks\prime.ps1')    (Join-Path $LorekeeperHome 'hooks\prime.ps1')
 Copy-Item -Force (Join-Path $ScriptDir 'hooks\reindex.ps1')  (Join-Path $LorekeeperHome 'hooks\reindex.ps1')
 Copy-Item -Force (Join-Path $ScriptDir 'hooks\autonote.ps1') (Join-Path $LorekeeperHome 'hooks\autonote.ps1')
+Copy-Item -Force (Join-Path $ScriptDir 'hooks\compact.ps1') (Join-Path $LorekeeperHome 'hooks\compact.ps1')
+
 # bash siblings too (Git Bash users, WSL, etc.)
 Copy-Item -Force (Join-Path $ScriptDir 'hooks\prime.sh')     (Join-Path $LorekeeperHome 'hooks\prime.sh')    -ErrorAction SilentlyContinue
 Copy-Item -Force (Join-Path $ScriptDir 'hooks\reindex.sh')   (Join-Path $LorekeeperHome 'hooks\reindex.sh')  -ErrorAction SilentlyContinue
 Copy-Item -Force (Join-Path $ScriptDir 'hooks\autonote.sh')  (Join-Path $LorekeeperHome 'hooks\autonote.sh') -ErrorAction SilentlyContinue
+Copy-Item -Force (Join-Path $ScriptDir 'hooks\compact.sh')  (Join-Path $LorekeeperHome 'hooks\compact.sh') -ErrorAction SilentlyContinue
+
 
 # --- Claude Code wiring ---
 if (-not $NoClaude) {
@@ -145,6 +149,8 @@ if (-not $NoClaude) {
   Copy-Item -Force (Join-Path $LorekeeperHome 'hooks\prime.ps1')    (Join-Path $ClaudeDir 'hooks\lorekeeper-prime.ps1')
   Copy-Item -Force (Join-Path $LorekeeperHome 'hooks\reindex.ps1')  (Join-Path $ClaudeDir 'hooks\lorekeeper-reindex.ps1')
   Copy-Item -Force (Join-Path $LorekeeperHome 'hooks\autonote.ps1') (Join-Path $ClaudeDir 'hooks\lorekeeper-autonote.ps1')
+  Copy-Item -Force (Join-Path $LorekeeperHome 'hooks\compact.ps1') (Join-Path $ClaudeDir 'hooks\lorekeeper-compact.ps1')
+
 }
 
 # --- install bin ---
@@ -187,9 +193,11 @@ if (-not $NoClaude) {
   $primeCmd    = "powershell -NoProfile -ExecutionPolicy Bypass -File `"$ClaudeDir\hooks\lorekeeper-prime.ps1`""
   $reindexCmd  = "powershell -NoProfile -ExecutionPolicy Bypass -File `"$ClaudeDir\hooks\lorekeeper-reindex.ps1`""
   $autonoteCmd = "powershell -NoProfile -ExecutionPolicy Bypass -File `"$ClaudeDir\hooks\lorekeeper-autonote.ps1`""
+  $compactCmd  = "powershell -NoProfile -ExecutionPolicy Bypass -File `"$ClaudeDir\hooks\lorekeeper-compact.ps1`""
+
 
   function Ensure-HookEntry {
-    param($Root, [string]$HookEvent, [string]$Cmd, [string]$Matcher)
+    param($Root, [string]$HookEvent, [string]$Cmd, [string]$Matcher, [switch]$Async)
     $existing = @()
     if ($Root.hooks.PSObject.Properties[$HookEvent]) { $existing = @($Root.hooks.$HookEvent) }
     # drop previous entries pointing at same command
@@ -202,15 +210,20 @@ if (-not $NoClaude) {
     })
     $entryProps = [ordered]@{}
     if ($Matcher) { $entryProps.matcher = $Matcher }
-    $entryProps.hooks = @([pscustomobject]@{ type = 'command'; command = $Cmd })
+    $hookObj = [pscustomobject]@{ type = 'command'; command = $Cmd }
+    if ($Async) { $hookObj | Add-Member -NotePropertyName async -NotePropertyValue $true }
+    $entryProps.hooks = @($hookObj)
     $filtered += [pscustomobject]$entryProps
     $Root.hooks | Add-Member -NotePropertyName $HookEvent -NotePropertyValue $filtered -Force
   }
+
 
   Ensure-HookEntry -Root $json -HookEvent 'SessionStart'     -Cmd $primeCmd    -Matcher $null
   Ensure-HookEntry -Root $json -HookEvent 'UserPromptSubmit' -Cmd $primeCmd    -Matcher $null
   Ensure-HookEntry -Root $json -HookEvent 'PostToolUse'      -Cmd $reindexCmd  -Matcher 'Write|Edit'
   Ensure-HookEntry -Root $json -HookEvent 'SessionEnd'       -Cmd $autonoteCmd -Matcher $null
+  Ensure-HookEntry -Root $json -HookEvent 'PostCompact' -Cmd $compactCmd -Matcher $null -Async
+
 
   Write-Utf8NoBom $Settings ($json | ConvertTo-Json -Depth 20)
 
@@ -355,7 +368,7 @@ Write-Host ''
 Write-Host 'installed.' -ForegroundColor Green
 Write-Host ''
 Write-Host "  home:     $LorekeeperHome"
-Write-Host "  hooks:    $LorekeeperHome\hooks\{prime,reindex,autonote}.ps1 (canonical)"
+Write-Host "  hooks:    $LorekeeperHome\hooks\{prime,reindex,autonote,compact}.ps1 (canonical)"
 if (-not $NoClaude) {
   Write-Host "  claude:   $ClaudeDir\hooks\lorekeeper-{prime,reindex,autonote}.ps1"
   Write-Host "  policy:   $ClaudeMd ($ClaudeTemplateKey)"

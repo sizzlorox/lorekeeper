@@ -44,7 +44,7 @@ function commandFor(script: ScriptRef): { cmd: string; args: string[] } {
  * `~/.claude`).
  */
 export async function runHook(
-  name: "prime" | "reindex" | "autonote",
+  name: "prime" | "reindex" | "autonote" | "compact",
   opts: RunOpts
 ): Promise<void> {
   const script = resolveHookScript(name);

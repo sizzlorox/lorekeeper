@@ -41,6 +41,14 @@ find "$seen_dir" -type f -mtime +30 -delete 2>/dev/null || true
 
 # Detach: SessionEnd has a ~60s timeout and Sonnet calls run longer.
 (
+  # --- watermark: skip lines already processed by compact hook ---
+  watermark_file="$LOREKEEPER_HOME/.compact-watermark/$session_id"
+  watermark_skip=0
+  if [[ -n "$session_id" && -f "$watermark_file" ]]; then
+    watermark_skip="$(cat "$watermark_file" 2>/dev/null || echo 0)"
+    rm -f "$watermark_file"  # one-shot
+  fi
+
   # --- structural gate ---
   tool_count="$(jq -s '[.[] | select(.type == "assistant") | .message.content[]? | select(.type == "tool_use")] | length' "$transcript_path" 2>/dev/null || echo 0)"
   [[ "$tool_count" -lt 10 ]] && exit 0
@@ -54,21 +62,39 @@ find "$seen_dir" -type f -mtime +30 -delete 2>/dev/null || true
   condensed="$(mktemp)"
   trap 'rm -f "$condensed"' EXIT
 
-  jq -r '
-    select(.type == "user" or .type == "assistant") |
-    (.message.content // empty) as $c |
-    if ($c | type) == "string" then
-      "[" + .type + "] " + $c
-    elif ($c | type) == "array" then
-      "[" + .type + "] " + (
-        [$c[] |
-          if .type == "text" then .text
-          elif .type == "tool_use" then "<tool:" + (.name // "?") + ">"
-          else "" end
-        ] | map(select(. != "")) | join(" ")
-      )
-    else empty end
-  ' "$transcript_path" | head -c 60000 > "$condensed"
+  if [[ "$watermark_skip" -gt 0 ]]; then
+    tail -n +"$((watermark_skip + 1))" "$transcript_path" | jq -r '
+      select(.type == "user" or .type == "assistant") |
+      (.message.content // empty) as $c |
+      if ($c | type) == "string" then
+        "[" + .type + "] " + $c
+      elif ($c | type) == "array" then
+        "[" + .type + "] " + (
+          [$c[] |
+            if .type == "text" then .text
+            elif .type == "tool_use" then "<tool:" + (.name // "?") + ">"
+            else "" end
+          ] | map(select(. != "")) | join(" ")
+        )
+      else empty end
+    ' | head -c 60000 > "$condensed"
+  else
+    jq -r '
+      select(.type == "user" or .type == "assistant") |
+      (.message.content // empty) as $c |
+      if ($c | type) == "string" then
+        "[" + .type + "] " + $c
+      elif ($c | type) == "array" then
+        "[" + .type + "] " + (
+          [$c[] |
+            if .type == "text" then .text
+            elif .type == "tool_use" then "<tool:" + (.name // "?") + ">"
+            else "" end
+          ] | map(select(. != "")) | join(" ")
+        )
+      else empty end
+    ' "$transcript_path" | head -c 60000 > "$condensed"
+  fi
 
   [[ ! -s "$condensed" ]] && exit 0
 

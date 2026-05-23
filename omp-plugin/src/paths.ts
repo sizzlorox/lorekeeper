@@ -42,7 +42,7 @@ export interface ScriptRef {
   readonly path: string;
 }
 
-export function resolveHookScript(name: "prime" | "reindex" | "autonote"): ScriptRef {
+export function resolveHookScript(name: "prime" | "reindex" | "autonote" | "compact"): ScriptRef {
   const home = resolveLorekeeperHome();
   if (isWin) {
     return { interpreter: "powershell", path: path.join(home, "hooks", `${name}.ps1`) };

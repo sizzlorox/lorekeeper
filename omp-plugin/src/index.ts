@@ -1,9 +1,13 @@
 import * as path from "node:path";
+import * as fs from "node:fs";
+import { spawn } from "node:child_process";
 import type {
   ExtensionAPI,
   ExtensionContext,
   SessionStartEvent,
   SessionShutdownEvent,
+  SessionCompactingEvent,
+  SessionCompactEvent,
   TurnEndEvent,
   ToolResultEvent,
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
@@ -118,6 +122,94 @@ export default function lorekeeperPlugin(pi: ExtensionAPI): void {
       });
     } catch (err) {
       pi.logger.debug("lorekeeper: autonote hook failed", { err: String(err) });
+    }
+  });
+
+  pi.on("session.compacting", async (_event: SessionCompactingEvent, ctx: ExtensionContext) => {
+    // Best-effort: inject relevant lorekeeper notes into the compaction summary.
+    // This ensures the compacted context preserves awareness of prior learnings.
+    const home = resolveLorekeeperHome();
+    const cwd = ctx.cwd;
+    let repo = "";
+    try {
+      const result = await new Promise<string>((resolve, reject) => {
+        const child = spawn("git", ["rev-parse", "--show-toplevel"], { cwd });
+        let out = "";
+        child.stdout?.on("data", (d: Buffer) => { out += d.toString(); });
+        child.once("close", (code) => code === 0 ? resolve(out.trim()) : reject());
+        child.once("error", reject);
+      });
+      repo = path.basename(result);
+    } catch {
+      return; // not a git repo
+    }
+    if (!repo) return;
+
+    // Collect note titles from the notes directory for this repo.
+    const notesDir = path.join(home, "notes", repo);
+    const docsDir = path.join(home, "docs", repo);
+    const contextLines: string[] = [];
+
+    for (const dir of [notesDir, docsDir]) {
+      try {
+        const entries = fs.readdirSync(dir).filter(f => f.endsWith(".md"));
+        for (const entry of entries.slice(0, 20)) {
+          try {
+            const content = fs.readFileSync(path.join(dir, entry), "utf8");
+            // Extract just the title and topic from frontmatter
+            const topicMatch = content.match(/^topic:\s*(.+)$/m);
+            const titleMatch = content.match(/^#\s+(.+)$/m);
+            if (topicMatch || titleMatch) {
+              const label = dir === notesDir ? "lorekeeper-note" : "lorekeeper-doc";
+              contextLines.push(`[${label}] ${entry}: ${titleMatch?.[1] ?? topicMatch?.[1] ?? entry}`);
+            }
+          } catch { /* skip unreadable files */ }
+        }
+      } catch { /* dir doesn't exist */ }
+    }
+
+    if (contextLines.length > 0) {
+      return {
+        context: [
+          "The following lorekeeper notes exist for this repo (queryable via qmd):",
+          ...contextLines,
+        ],
+      };
+    }
+  });
+
+  pi.on("session_compact", async (event: SessionCompactEvent, ctx: ExtensionContext) => {
+    const sessionId = sessionIdOf(ctx);
+    if (!sessionId) return;
+
+    const writer = transcripts.get(sessionId);
+    if (!writer) return;
+
+    // Save watermark so SessionEnd's autonote skips already-processed lines.
+    const home = resolveLorekeeperHome();
+    const watermarkDir = path.join(home, ".compact-watermark");
+    try {
+      fs.mkdirSync(watermarkDir, { recursive: true });
+      fs.writeFileSync(path.join(watermarkDir, sessionId), String(writer.lineCount), "utf8");
+    } catch {
+      // best-effort
+    }
+
+    try {
+      await runHook("compact", {
+        cwd: ctx.cwd,
+        fireAndForget: true,
+        stdinJson: {
+          transcript_path: writer.path,
+          cwd: ctx.cwd,
+          session_id: sessionId,
+          hook_event_name: "PostCompact",
+          trigger: event.fromExtension ? "manual" : "auto",
+          compact_summary: event.compactionEntry.summary,
+        },
+      });
+    } catch (err) {
+      pi.logger.debug("lorekeeper: compact hook failed", { err: String(err) });
     }
   });
 }

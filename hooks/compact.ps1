@@ -1,0 +1,515 @@
+#Requires -Version 5.1
+# lorekeeper: PostCompact hook (Windows) — autonomous extraction from compacted context.
+# No structural gate, no signal gate — compaction = substantial by definition.
+# Same pipeline as autonote: condense → surface → classify → draft → write → watermark.
+
+$ErrorActionPreference = 'SilentlyContinue'
+
+# Recursion guard — skip when inside our own spawned classifier claude -p call.
+if ($env:LOREKEEPER_AUTONOTE_CHILD -eq '1') { exit 0 }
+
+$ClaudeDir = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Path $env:USERPROFILE '.claude' }
+$homeFile  = Join-Path $ClaudeDir '.lorekeeper-home'
+$LorekeeperHome = if ($env:LOREKEEPER_HOME) { $env:LOREKEEPER_HOME }
+                  elseif (Test-Path $homeFile) { (Get-Content -Raw $homeFile).Trim() }
+                  else { Join-Path $env:LOCALAPPDATA 'lorekeeper' }
+
+if (Test-Path (Join-Path $LorekeeperHome '.autonote-off')) { exit 0 }
+if ($env:LOREKEEPER_AUTONOTE -eq 'off') { exit 0 }
+if (-not (Get-Command claude -ErrorAction SilentlyContinue)) { exit 0 }
+
+$inputRaw = [Console]::In.ReadToEnd()
+$data = $null
+try { if ($inputRaw) { $data = $inputRaw | ConvertFrom-Json } } catch { exit 0 }
+if (-not $data) { exit 0 }
+
+$transcriptPath = [string]$data.transcript_path
+$cwd            = [string]$data.cwd
+$sessionId      = [string]$data.session_id
+$compactSummary = [string]$data.compact_summary
+
+if (-not $transcriptPath -or -not (Test-Path $transcriptPath)) { exit 0 }
+if (-not $cwd -or -not (Test-Path $cwd)) { exit 0 }
+
+$repo = ''
+Push-Location $cwd
+try {
+  $top = & git rev-parse --show-toplevel 2>$null
+  if ($LASTEXITCODE -eq 0 -and $top) { $repo = Split-Path $top.Trim() -Leaf }
+} finally { Pop-Location }
+if (-not $repo) { exit 0 }
+
+# Dedup with compact-specific key: sessionId-compact-timestamp
+$seenDir = Join-Path $LorekeeperHome '.autonote-seen'
+New-Item -ItemType Directory -Force -Path $seenDir | Out-Null
+$compactKey = "$sessionId-compact-$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())"
+if ($compactKey) {
+  $seenMarker = Join-Path $seenDir $compactKey
+  New-Item -ItemType File -Path $seenMarker -Force | Out-Null
+}
+Get-ChildItem $seenDir -File -ErrorAction SilentlyContinue |
+  Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-30) } |
+  Remove-Item -Force -ErrorAction SilentlyContinue
+
+# Worker script runs detached (hook timeout applies, Sonnet runs longer).
+$workerScript = @'
+param(
+  [string]$TranscriptPath,
+  [string]$LorekeeperHome,
+  [string]$Repo,
+  [string]$SessionId,
+  [string]$CompactSummary
+)
+$ErrorActionPreference = 'SilentlyContinue'
+
+$lines = Get-Content -LiteralPath $TranscriptPath -ErrorAction SilentlyContinue
+if (-not $lines) { exit 0 }
+
+$entries = @()
+foreach ($ln in $lines) {
+  if (-not $ln) { continue }
+  try { $entries += ($ln | ConvertFrom-Json) } catch { }
+}
+if ($entries.Count -eq 0) { exit 0 }
+
+# No structural gate — compaction = substantial by definition.
+# No signal gate — compaction = substantial by definition.
+
+# --- condense ---
+$sb = New-Object System.Text.StringBuilder
+foreach ($e in $entries) {
+  if ($e.type -ne 'user' -and $e.type -ne 'assistant') { continue }
+  $c = $e.message.content
+  $chunk = ''
+  if ($c -is [string]) {
+    $chunk = $c
+  } elseif ($c -is [System.Array]) {
+    $parts = @()
+    foreach ($part in $c) {
+      if ($part.type -eq 'text') { $parts += [string]$part.text }
+      elseif ($part.type -eq 'tool_use') { $parts += "<tool:$($part.name)>" }
+    }
+    $chunk = ($parts -join ' ')
+  }
+  if ($chunk) { [void]$sb.AppendLine("[$($e.type)] $chunk") }
+}
+$condensed = $sb.ToString()
+if ($condensed.Length -gt 60000) { $condensed = $condensed.Substring(0, 60000) }
+if (-not $condensed.Trim()) { exit 0 }
+
+# Prepend compact summary to condensed text.
+if ($CompactSummary) {
+  $condensed = "[COMPACT SUMMARY] $CompactSummary`n`n$condensed"
+}
+
+# --- surface implicit learnings (Feature 3) ---
+$surfacePrompt = @"
+Analyze this Claude Code session. Output EXACTLY these two sections, no preamble:
+
+SUMMARY: <one sentence: what specific thing was learned or built; name the technology, feature, or subsystem>
+IMPLICIT:
+<one bullet per non-obvious decision, gotcha, or behavior implied by the tool calls but not stated explicitly in text>
+<write "(none)" if nothing non-obvious>
+
+TRANSCRIPT:
+$condensed
+"@
+
+$env:LOREKEEPER_AUTONOTE_CHILD = '1'
+$surfaceOut = & claude -p $surfacePrompt --model claude-haiku-4-5-20251001 --tools '' 2>$null
+$sessionSummary = ''
+$surfacedText = ''
+if ($surfaceOut) {
+  $surfaceLines = ($surfaceOut -join "`n") -split "`n"
+  foreach ($ln in $surfaceLines) {
+    if ($ln -match '^SUMMARY:\s*(.+)') { $sessionSummary = $Matches[1].Trim(); break }
+  }
+  if ($sessionSummary.Length -gt 200) { $sessionSummary = $sessionSummary.Substring(0, 200) }
+  $inImplicit = $false
+  $implicitLines = @()
+  foreach ($ln in $surfaceLines) {
+    if ($ln -match '^IMPLICIT:') { $inImplicit = $true; continue }
+    if ($inImplicit -and $ln.Trim() -ne '(none)' -and $ln.Trim() -ne '') {
+      $implicitLines += $ln
+    }
+  }
+  $surfacedText = ($implicitLines -join "`n")
+}
+
+# --- Haiku classifier (gets transcript + surfaced insights) ---
+$surfacedSection = if ($surfacedText) { $surfacedText } else { '(none)' }
+$gatePrompt = @"
+You classify finished Claude Code sessions. Reply with EXACTLY ONE WORD on line 1: none, note, feature-doc, adr, or shared-note.
+
+- note: scratch memory for a SINGLE non-obvious learning — debug dead-end + fix, library/API quirk, config in an odd place, undocumented convention. Repo-specific.
+- feature-doc: the session BUILT or substantially modified a nameable feature/subsystem future teammates would need onboarding docs for. Strong signal: new files/modules, components wired together, "shipped"/"done"/"works now" language, tests added.
+- adr: an architectural or design DECISION was made with reasoning that will constrain future work. Strong signal: alternatives weighed, tradeoffs discussed, decision rationale articulated.
+- shared-note: a learning that applies ACROSS repos — dev environment quirk, infrastructure behavior (Docker/nginx/Redis/PM2/systemd), OS/platform gotcha, tool configuration affecting ALL projects.
+- none: nothing worth preserving cross-session.
+
+Default to none unless clear. Between note and feature-doc, prefer note. Between note and shared-note, prefer note unless clearly cross-repo infrastructure. Return ONE WORD on line 1, nothing else.
+
+SURFACED INSIGHTS:
+$surfacedSection
+
+TRANSCRIPT:
+$condensed
+"@
+
+$gateOut = & claude -p $gatePrompt --model claude-haiku-4-5-20251001 --tools '' 2>$null
+if (-not $gateOut) { exit 0 }
+$firstRaw = ($gateOut -split "`n")[0]
+$firstWord = ($firstRaw -split '\s+' | Where-Object { $_ })[0]
+$gateFirst = if ($firstWord) { ($firstWord.ToLower() -replace '[^a-z-]','') } else { '' }
+
+$kind = switch ($gateFirst) {
+  'note'         { 'note' }
+  'featuredoc'   { 'feature-doc' }
+  'feature-doc'  { 'feature-doc' }
+  'adr'          { 'adr' }
+  'sharednote'   { 'shared-note' }
+  'shared-note'  { 'shared-note' }
+  default        { $null }
+}
+if (-not $kind) {
+  # Log skipped sessions so classifier misses are reviewable.
+  if ($sessionSummary) {
+    $skippedLog = Join-Path $LorekeeperHome '.skipped.log'
+    $stamp = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+    $summaryTrunc = if ($sessionSummary.Length -gt 120) { $sessionSummary.Substring(0, 120) } else { $sessionSummary }
+    Add-Content -LiteralPath $skippedLog -Value "$stamp`t$Repo`t`"$summaryTrunc`"`t-> none (compact)"
+  }
+  exit 0
+}
+
+$today = (Get-Date).ToString('yyyy-MM-dd')
+
+# Helper: run qmd similarity search via claude with MCP tools.
+function Find-SimilarNote {
+  param([string]$Collection, [string]$PathFilter, [string]$Query)
+  if (-not $Query) { return 'NO_MATCH' }
+  $simPrompt = @"
+Use mcp__qmd__query to search collection "$Collection" with this query.
+
+If the top result has similarity >= 0.82 AND its path contains '$PathFilter', output on the FIRST LINE ONLY:
+MATCH:<filename-without-.md-extension>
+
+Otherwise output on the FIRST LINE ONLY:
+NO_MATCH
+
+No other output.
+
+Query: $Query
+"@
+  $simOut = & claude -p $simPrompt --model claude-haiku-4-5-20251001 2>$null
+  if ($simOut) { return ($simOut -split "`n")[0].Trim() -replace '\s','' }
+  return 'NO_MATCH'
+}
+
+# --- per-kind prompt + output dir ---
+$notesBase = Join-Path $LorekeeperHome "notes\$Repo"
+$docsBase  = Join-Path $LorekeeperHome "docs\$Repo"
+$adrBase   = Join-Path $docsBase 'adr'
+
+if ($kind -eq 'note' -or $kind -eq 'shared-note') {
+  if ($kind -eq 'shared-note') {
+    $outDir      = Join-Path $LorekeeperHome 'notes\shared'
+    $pathFilter  = '/notes/shared/'
+    $repoField   = 'shared'
+    $scopeNote   = 'This is a CROSS-REPO note about infrastructure/environment, not repo-specific code.'
+  } else {
+    $outDir      = $notesBase
+    $pathFilter  = "/notes/$Repo/"
+    $repoField   = $Repo
+    $scopeNote   = ''
+  }
+  New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+
+  # qmd similarity search for mandatory merge target.
+  $simResult = Find-SimilarNote -Collection 'lorekeeper-notes' -PathFilter $pathFilter -Query $sessionSummary
+  $mergeTargetSlug = ''
+  $mergeTargetContent = ''
+  if ($simResult -match '^MATCH:(.+)') {
+    $candidateSlug = ($Matches[1] -replace '[^A-Za-z0-9_\-]','')
+    $candidatePath = Join-Path $outDir "$candidateSlug.md"
+    if (Test-Path $candidatePath) {
+      $mergeTargetSlug    = $candidateSlug
+      $mergeTargetContent = Get-Content -Raw -LiteralPath $candidatePath -ErrorAction SilentlyContinue
+    }
+  }
+
+  # Build existing-context fallback.
+  $existingCtx = ''
+  if (Test-Path $outDir) {
+    Get-ChildItem -Path $outDir -Filter *.md -File -ErrorAction SilentlyContinue | ForEach-Object {
+      $raw = Get-Content -Raw -LiteralPath $_.FullName -ErrorAction SilentlyContinue
+      if ($raw) {
+        if ($raw.Length -gt 3000) { $raw = $raw.Substring(0, 3000) }
+        $existingCtx += "### existing note: $($_.BaseName)`n$raw`n`n"
+      }
+    }
+  }
+  if (-not $existingCtx) { $existingCtx = '(no existing notes)' }
+
+  $mergeBlock = if ($mergeTargetSlug) {
+    "MANDATORY MERGE TARGET: semantic similarity >= 0.82 matched existing note '$mergeTargetSlug'.`nYou MUST merge into it. Reuse slug '$mergeTargetSlug', preserve existing bullets, add new insights, bump 'updated'. Do NOT create a new note.`n`nEXISTING NOTE (merge into this):`n$mergeTargetContent"
+  } else {
+    "Existing notes for this repo are below — if this session EXTENDS one of them (same topic/subsystem), reuse its slug and MERGE (preserve existing bullets, add new ones, bump 'updated'). If this session surfaced a NEW learning, pick a fresh slug.`n`n$existingCtx"
+  }
+
+  $surfacedBlock = if ($surfacedText) { "`nSURFACED IMPLICIT INSIGHTS (include relevant items in ## what i learned):`n$surfacedText`n" } else { '' }
+
+  $draftPrompt = @"
+Extract the single most memory-worthy learning from the following Claude Code session as a note. Output ONLY the note contents, no preamble, no code fence.
+
+$mergeBlock
+$surfacedBlock
+Exact format:
+
+---
+repo: $repoField
+topic: <2-5 words>
+date: <YYYY-MM-DD of first version; reuse from existing if merging, else $today>
+updated: $today
+tags: [<tag>, <tag>]
+slug: <kebab-case-slug>
+---
+
+# <Title>
+
+## context
+<1-3 sentences: when/why this came up>
+
+## what i learned
+<bullets for gotchas. cite file:line where relevant. prose terse: drop articles, fragments ok. technical identifiers and error strings exact.>
+
+## see also
+<related files or external refs; omit section entirely if none>
+
+Rules:
+- Pick ONE specific learning. $scopeNote
+- If nothing is truly non-obvious, output literally: SKIP
+- slug kebab-case, no spaces, stable across updates.
+- When merging, keep existing bullets that are still accurate; don't drop unless contradicted.
+
+TRANSCRIPT:
+$condensed
+"@
+}
+elseif ($kind -eq 'feature-doc') {
+  $outDir = $docsBase
+  New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+
+  $simResult = Find-SimilarNote -Collection 'lorekeeper-docs' -PathFilter "/docs/$Repo/" -Query $sessionSummary
+  $mergeTargetSlug = ''
+  $mergeTargetContent = ''
+  if ($simResult -match '^MATCH:(.+)') {
+    $candidateSlug = ($Matches[1] -replace '[^A-Za-z0-9_\-]','')
+    $candidatePath = Join-Path $outDir "$candidateSlug.md"
+    if (Test-Path $candidatePath) {
+      $mergeTargetSlug    = $candidateSlug
+      $mergeTargetContent = Get-Content -Raw -LiteralPath $candidatePath -ErrorAction SilentlyContinue
+    }
+  }
+
+  $existingCtx = ''
+  if (Test-Path $outDir) {
+    Get-ChildItem -Path $outDir -Filter *.md -File -ErrorAction SilentlyContinue | ForEach-Object {
+      $raw = Get-Content -Raw -LiteralPath $_.FullName -ErrorAction SilentlyContinue
+      if ($raw) {
+        if ($raw.Length -gt 3000) { $raw = $raw.Substring(0, 3000) }
+        $existingCtx += "### existing doc: $($_.BaseName)`n$raw`n`n"
+      }
+    }
+  }
+  if (-not $existingCtx) { $existingCtx = '(no existing feature docs)' }
+
+  $mergeBlock = if ($mergeTargetSlug) {
+    "MANDATORY MERGE TARGET: semantic similarity >= 0.82 matched existing doc '$mergeTargetSlug'.`nYou MUST merge into it. Reuse slug '$mergeTargetSlug', preserve existing prose, add new details, bump 'updated'. Do NOT create a new doc.`n`nEXISTING DOC (merge into this):`n$mergeTargetContent"
+  } else {
+    "Existing feature docs for this repo are below — if this session EXTENDED one of them, reuse its slug and MERGE (preserve existing prose, add new sections/details, bump 'updated'). If this session built something NEW, pick a fresh slug.`n`n$existingCtx"
+  }
+
+  $surfacedBlock = if ($surfacedText) { "`nSURFACED IMPLICIT INSIGHTS (include relevant items in ## how it works):`n$surfacedText`n" } else { '' }
+
+  $draftPrompt = @"
+Write engineering feature documentation for the work done in this Claude Code session. Output ONLY the doc contents, no preamble, no code fence.
+
+$mergeBlock
+$surfacedBlock
+Exact output format:
+
+---
+repo: $Repo
+type: feature
+feature: <human-readable name>
+date: <YYYY-MM-DD of first version; reuse from existing if merging, else $today>
+updated: $today
+slug: <kebab-case-slug>
+---
+
+# <Feature Name>
+
+## overview
+<1-2 paragraphs: what it does, who uses it, why it exists>
+
+## how it works
+<entry points, key files, control flow. cite code as ``path:line``>
+
+## configuration
+<env vars, settings, flags, defaults. omit section if none.>
+
+## usage
+<code examples, CLI invocations, API calls>
+
+## see also
+<related docs, external refs, code paths. omit section if none.>
+
+Rules:
+- If this session did NOT build or substantially modify a nameable feature, output literally: SKIP
+- slug must be filesystem-safe kebab-case and stable across updates.
+- When merging, keep content that's still accurate; don't drop sections unless contradicted.
+
+TRANSCRIPT:
+$condensed
+"@
+}
+else { # adr
+  $outDir = $adrBase
+  New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+  $lastNum = 0
+  Get-ChildItem -Path $outDir -Filter 'ADR-*.md' -File -ErrorAction SilentlyContinue | ForEach-Object {
+    if ($_.BaseName -match '^ADR-(\d+)') {
+      $n = [int]$Matches[1]
+      if ($n -gt $lastNum) { $lastNum = $n }
+    }
+  }
+  $adrNum = 'ADR-{0:D4}' -f ($lastNum + 1)
+
+  $surfacedBlock = if ($surfacedText) { "`nSURFACED IMPLICIT INSIGHTS (include in ## decision or ## alternatives considered as relevant):`n$surfacedText`n" } else { '' }
+
+  $draftPrompt = @"
+Write an Architecture Decision Record (ADR) for the decision made in this Claude Code session. Output ONLY the ADR contents, no preamble, no code fence.
+$surfacedBlock
+Exact format:
+
+---
+repo: $Repo
+type: adr
+number: $adrNum
+date: $today
+status: accepted
+slug: <kebab-case-slug>
+---
+
+# ${adrNum}: <Title>
+
+## context
+<forces at play, constraints, problem statement. 2-4 sentences.>
+
+## decision
+<what was decided, plainly stated>
+
+## consequences
+<positive outcomes, negative outcomes, tradeoffs. bullets ok.>
+
+## alternatives considered
+<other options evaluated, reasons rejected. bullets ok.>
+
+Rules:
+- If this session did NOT make a real architectural decision with reasoning, output literally: SKIP
+- slug kebab-case, no spaces. Title short (5-10 words).
+
+TRANSCRIPT:
+$condensed
+"@
+}
+
+$draft = & claude -p $draftPrompt --model claude-sonnet-4-6 --tools '' 2>$null
+if (-not $draft) { exit 0 }
+$draftText = ($draft -join "`n")
+$firstLine = ($draftText -split "`n")[0].Trim()
+if ($firstLine -eq 'SKIP') { exit 0 }
+
+# Extract slug
+$slug = ''
+$fmCount = 0; $inFm = $false
+foreach ($ln in ($draftText -split "`n")) {
+  if ($ln.Trim() -eq '---') { $fmCount++; $inFm = ($fmCount -eq 1); continue }
+  if ($inFm -and $ln -match '^\s*slug:\s*(.+?)\s*$') { $slug = $Matches[1]; break }
+}
+$slug = ($slug -replace '[^A-Za-z0-9_\-]','')
+if (-not $slug) { $slug = "auto-$(Get-Date -UFormat %s)" }
+
+New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+
+# Per-kind target path
+$outPath = switch ($kind) {
+  'note'        { Join-Path $outDir "$slug.md" }
+  'shared-note' { Join-Path $outDir "$slug.md" }
+  'feature-doc' { Join-Path $outDir "$slug.md" }
+  'adr'         { Join-Path $outDir ($adrNum + '-' + $slug + '.md') }
+}
+
+# Strip slug: line from frontmatter
+$outLines = @()
+$fmCount = 0; $inFm = $false
+foreach ($ln in ($draftText -split "`n")) {
+  if ($ln.Trim() -eq '---') {
+    $fmCount++; $inFm = ($fmCount -eq 1)
+    $outLines += $ln; continue
+  }
+  if ($inFm -and $ln -match '^\s*slug:') { continue }
+  $outLines += $ln
+}
+$enc = New-Object System.Text.UTF8Encoding $false
+[System.IO.File]::WriteAllText($outPath, ($outLines -join "`r`n"), $enc)
+
+if (Get-Command qmd -ErrorAction SilentlyContinue) {
+  & qmd update 2>$null | Out-Null
+  & qmd embed  2>$null | Out-Null
+}
+
+$logPath = Join-Path $LorekeeperHome '.autonote.log'
+$stamp = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+Add-Content -LiteralPath $logPath -Value "[$stamp] $Repo [$kind]: $outPath (compact session $SessionId)"
+
+# Distill watermark: flag repo when 15+ notes written since last distill.
+if ($kind -eq 'note') {
+  $watermarkDir = Join-Path $LorekeeperHome '.distill-watermark'
+  $pendingDir   = Join-Path $LorekeeperHome '.distill-pending'
+  New-Item -ItemType Directory -Force -Path $watermarkDir | Out-Null
+  New-Item -ItemType Directory -Force -Path $pendingDir   | Out-Null
+  $notesDir = Join-Path $LorekeeperHome "notes\$Repo"
+  $notesCount = (Get-ChildItem -Path $notesDir -Filter *.md -File -ErrorAction SilentlyContinue | Measure-Object).Count
+  $wmFile = Join-Path $watermarkDir $Repo
+  $lastWm = if (Test-Path $wmFile) { [int](Get-Content -Raw $wmFile).Trim() } else { 0 }
+  if (($notesCount - $lastWm) -ge 15) {
+    New-Item -ItemType File -Path (Join-Path $pendingDir $Repo) -Force | Out-Null
+  }
+}
+
+# --- compact watermark: save transcript line count for autonote SessionEnd ---
+$compactWmDir = Join-Path $LorekeeperHome '.compact-watermark'
+New-Item -ItemType Directory -Force -Path $compactWmDir | Out-Null
+$lineCount = $lines.Count
+$compactWmFile = Join-Path $compactWmDir $SessionId
+$enc = New-Object System.Text.UTF8Encoding $false
+[System.IO.File]::WriteAllText($compactWmFile, [string]$lineCount, $enc)
+'@
+
+$workerPath = Join-Path $env:TEMP ("lorekeeper-compact-" + [Guid]::NewGuid().ToString('N') + ".ps1")
+$enc = New-Object System.Text.UTF8Encoding $false
+[System.IO.File]::WriteAllText($workerPath, $workerScript, $enc)
+
+$pwshArgs = @(
+  '-NoProfile','-ExecutionPolicy','Bypass','-File', $workerPath,
+  '-TranscriptPath', $transcriptPath,
+  '-LorekeeperHome', $LorekeeperHome,
+  '-Repo', $repo,
+  '-SessionId', $sessionId,
+  '-CompactSummary', $compactSummary
+)
+Start-Process -FilePath 'powershell' -ArgumentList $pwshArgs -WindowStyle Hidden | Out-Null
+
+exit 0

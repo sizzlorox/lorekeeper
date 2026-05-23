@@ -25,6 +25,7 @@ import { resolveLorekeeperHome } from "./paths.js";
  */
 export class TranscriptWriter {
   readonly #file: string;
+  #lineCount = 0;
 
   constructor(sessionId: string) {
     const safeId = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_") || `sess-${Date.now()}`;
@@ -100,9 +101,14 @@ export class TranscriptWriter {
     return 1;
   }
 
+  get lineCount(): number {
+    return this.#lineCount;
+  }
+
   #write(line: Record<string, unknown>): void {
     try {
       fs.appendFileSync(this.#file, JSON.stringify(line) + "\n", "utf8");
+      this.#lineCount++;
     } catch {
       /* swallow — transcript is best-effort */
     }

@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 # lorekeeper: SessionEnd hook (Windows) — autonomous extraction.
 # Structural gate -> surface step -> Haiku classifier -> Sonnet drafter routes to
 # notes/, docs/<feature>.md, docs/adr/ADR-NNNN-<slug>.md, or notes/shared/.
@@ -68,6 +68,23 @@ foreach ($ln in $lines) {
   try { $entries += ($ln | ConvertFrom-Json) } catch { }
 }
 if ($entries.Count -eq 0) { exit 0 }
+# --- watermark: skip lines already processed by compact hook ---
+$watermarkFile = Join-Path $LorekeeperHome (".compact-watermark\$SessionId")
+$watermarkSkip = 0
+if ($SessionId -and (Test-Path $watermarkFile)) {
+  $watermarkSkip = [int]((Get-Content -Raw $watermarkFile).Trim())
+  Remove-Item -LiteralPath $watermarkFile -Force -ErrorAction SilentlyContinue
+}
+if ($watermarkSkip -gt 0 -and $watermarkSkip -lt $lines.Count) {
+  $lines = $lines[$watermarkSkip..($lines.Count - 1)]
+  # Re-parse entries from remaining lines
+  $entries = @()
+  foreach ($ln in $lines) {
+    if (-not $ln) { continue }
+    try { $entries += ($ln | ConvertFrom-Json) } catch { }
+  }
+  if ($entries.Count -eq 0) { exit 0 }
+}
 
 # --- structural gate: tool_use count ---
 $toolCount = 0
