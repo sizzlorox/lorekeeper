@@ -1,4 +1,5 @@
 ---
+type: __TYPE__
 repo: __REPO__
 topic: __SLUG__
 date: __DATE__

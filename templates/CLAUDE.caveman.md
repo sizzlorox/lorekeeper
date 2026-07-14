@@ -34,6 +34,7 @@ Path: `__LOREKEEPER_HOME__/notes/<repo>/<kebab-slug>.md`
 
 ```
 ---
+type: note
 repo: <repo>
 topic: <short>
 date: <YYYY-MM-DD first version>

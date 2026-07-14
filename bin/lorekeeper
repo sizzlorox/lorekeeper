@@ -16,7 +16,7 @@ USAGE='lorekeeper <command> [args]
   note <repo> <slug>  open $EDITOR on a note (creates from template if missing)
   doc  <repo> <slug>  same, for docs
   ls [repo]           list notes/docs (optionally scoped to one repo)
-  reindex             force qmd update + embed
+  reindex             backfill missing OKF `type:` fields, then qmd update + embed
   distill [repo]      synthesize durable docs (architecture/runbook/onboarding/
                       conventions/api) from notes + codebase. Run from the
                       repo root; arg defaults to the current git toplevel name.
@@ -40,6 +40,7 @@ ensure_template() {
   if [[ ! -f "$TEMPLATE_NOTE" ]]; then
     cat > "$TEMPLATE_NOTE" <<'TPL'
 ---
+type: __TYPE__
 repo: __REPO__
 topic: __SLUG__
 date: __DATE__
@@ -58,12 +59,90 @@ tags: []
 ## see also
 <relative links or qmd:// refs>
 TPL
+  elif ! grep -q '^type:' "$TEMPLATE_NOTE"; then
+    # Pre-OKF template already on disk. Add the type line, keep any user edits.
+    local tmp; tmp="$(mktemp)"
+    awk -v BINMODE=3 'NR==1 {cr = (/\r$/) ? "\r" : ""; print; print "type: __TYPE__" cr; next} {print}' \
+      "$TEMPLATE_NOTE" > "$tmp"
+    cat "$tmp" > "$TEMPLATE_NOTE"
+    rm -f "$tmp"
   fi
 }
 
 open_editor() {
   local f="$1"
   "${EDITOR:-${VISUAL:-vi}}" "$f"
+}
+
+# --- OKF v0.1 conformance (https://github.com/GoogleCloudPlatform/knowledge-catalog) ---
+# Every non-reserved .md must carry non-empty frontmatter `type`. Everything
+# lorekeeper writes now does; this backfills what was written before.
+
+okf_type_for() {
+  # $1 = path relative to $LOREKEEPER_HOME. Type is a free string; derive from tree.
+  case "$1" in
+    docs/*/adr/*) echo "adr" ;;
+    docs/*)       echo "doc" ;;
+    *)            echo "note" ;;
+  esac
+}
+
+# Insert `type:` into one file. Returns 0 if it changed the file, 1 if already conformant.
+okf_fix_file() {
+  local f="$1" type="$2" title ts tmp
+  title="$(sed -n 's/^# //p' "$f" 2>/dev/null | head -1)"
+  [[ -n "$title" ]] || title="$(basename "$f" .md)"
+  # ponytail: mtime is best-effort across GNU/BSD; today is a fine fallback.
+  ts="$(date -r "$f" +%F 2>/dev/null || date +%F)"
+  tmp="$(mktemp)"
+  # awk exits 0 when it rewrote the file, 1 when it was already conformant. Run it
+  # inside `if` so `set -e` does not treat "no change needed" as a fatal error.
+  # BINMODE=3 stops gawk-on-Windows opening in text mode and eating CRs; it is an
+  # unused variable everywhere else.
+  if awk -v BINMODE=3 -v type="$type" -v title="$title" -v ts="$ts" '
+    { lines[NR] = $0 }
+    NR == 1 {
+      cr = (/\r$/) ? "\r" : ""
+      hasfm = (/^---[[:space:]]*$/) ? 1 : 0
+    }
+    hasfm && NR > 1 && !closed && /^---[[:space:]]*$/  { closed = 1 }
+    hasfm && NR > 1 && !closed && /^type:[[:space:]]*[^[:space:]]/ { typed = 1 }
+    END {
+      if (hasfm && typed) { for (i = 1; i <= NR; i++) print lines[i]; exit 1 }
+      if (hasfm) {
+        print lines[1]
+        print "type: " type cr
+        for (i = 2; i <= NR; i++) print lines[i]
+        exit 0
+      }
+      # No frontmatter at all — hand-made file. Prepend a minimal conformant block.
+      print "---" cr; print "type: " type cr; print "title: " title cr
+      print "timestamp: " ts cr; print "---" cr; print "" cr
+      for (i = 1; i <= NR; i++) print lines[i]
+      exit 0
+    }
+  ' "$f" > "$tmp"; then
+    cat "$tmp" > "$f"   # preserve inode/permissions
+    rm -f "$tmp"
+    return 0
+  fi
+  rm -f "$tmp"
+  return 1
+}
+
+# Walk the store, type anything untyped. Idempotent. Never touches date:/updated:.
+okf_backfill() {
+  local total=0 fixed=0 f rel
+  for kind in notes docs; do
+    [[ -d "$LOREKEEPER_HOME/$kind" ]] || continue
+    while IFS= read -r -d '' f; do
+      rel="${f#"$LOREKEEPER_HOME"/}"
+      case "$(basename "$f")" in index.md|log.md) continue ;; esac  # OKF reserved
+      total=$((total + 1))
+      if okf_fix_file "$f" "$(okf_type_for "$rel")"; then fixed=$((fixed + 1)); fi
+    done < <(find "$LOREKEEPER_HOME/$kind" -type f -name '*.md' -print0 2>/dev/null)
+  done
+  printf "okf: %d concepts typed (%d backfilled)\n" "$total" "$fixed"
 }
 
 open_file() {
@@ -73,9 +152,12 @@ open_file() {
   local dir="$LOREKEEPER_HOME/$kind/$repo"
   mkdir -p "$dir"
   local file="$dir/$slug.md"
+  # OKF v0.1 requires a non-empty `type` on every concept; derive it from the tree.
+  local type="note"; [[ "$kind" == "docs" ]] && type="doc"
   if [[ ! -f "$file" ]]; then
     ensure_template
     sed \
+      -e "s|__TYPE__|$type|g" \
       -e "s|__REPO__|$repo|g" \
       -e "s|__SLUG__|$slug|g" \
       -e "s|__DATE__|$(date +%F)|g" \
@@ -184,6 +266,7 @@ case "$cmd" in
     ;;
 
   reindex)
+    okf_backfill
     qmd update && qmd embed
     ;;
 

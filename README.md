@@ -21,8 +21,63 @@ $XDG_DATA_HOME/lorekeeper/
 - **Distills on demand.** `lorekeeper distill` runs inside a repo and spawns a Sonnet session with Read/Glob/Grep/Write to synthesize durable engineering docs from accumulated notes + the codebase: `architecture.md`, `onboarding.md`, `runbook.md`, `conventions.md`, `api.md`. Use `<!-- AUTODOC:START -->` / `<!-- AUTODOC:END -->` sentinels in any hand-curated doc to pin sections the distill pass is allowed to rewrite. Expensive (several $ per repo) and slow (minutes) — run occasionally, not on every session.
 - **Re-indexes itself.** A `PostToolUse` hook runs `qmd update && qmd embed` in the background whenever Claude writes under the notes/docs tree. The autonote hook triggers the same reindex directly after it writes.
 - **Uses caveman if present.** Ships a caveman-compressed `CLAUDE.md` block to cut input tokens on every session, and instructs Claude to write notes in caveman-speak so retrieval is cheap too.
+- **Shares what it knows.** Everything lorekeeper writes is a conformant [OKF v0.1](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md) concept, so `notes/<repo>/` and `docs/<repo>/` are portable knowledge bundles as they stand. Copy one into the repo it describes, commit it, and teammates — or any agent that can read markdown, lorekeeper installed or not — inherit the memory. See [Sharing memory: OKF](#sharing-memory-okf).
 - **Hands off context on compaction.** A `PreCompact` hook fires when the session context is about to be summarized. It reads your repo's lorekeeper notes from disk and injects them — plus six handoff rules — directly into the compaction prompt. The summarizer is told to preserve decision rationale, exact file paths, error messages, task status, blockers, and prior compaction summaries. No LLM calls, disk reads only, completes in under 2 seconds. On omp, the `session.compacting` handler does the same injection via context lines.
 
+
+## Sharing memory: OKF
+
+### What OKF is
+
+The [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md) (OKF v0.1, Google Cloud, June 2026, Apache 2.0) is an open spec for knowledge that AI agents read. It is deliberately unexciting:
+
+- A **bundle** is a directory of markdown files. One file = one concept. Its path is its identifier.
+- Every file carries **YAML frontmatter**, and exactly one field is required: **`type`** — a free string naming the kind of thing the file describes. `title`, `description`, `tags`, and `timestamp` are recommended, not mandatory.
+- Files link to each other with ordinary markdown links, which turns the directory into a knowledge graph.
+
+There is no runtime, no SDK, no account, and nothing to install. An agent "uses" a bundle by reading the files — so any tool that can open markdown is already an OKF client. The format exists so that curated context (schemas, runbooks, decisions, hard-won gotchas) can move between agents and vendors without a proprietary platform in the middle.
+
+### Lorekeeper speaks it natively
+
+Notes and docs were already markdown + frontmatter, so lorekeeper needed one field. Everything it writes now carries `type`, which makes `notes/<repo>/` and `docs/<repo>/` conformant OKF v0.1 bundles exactly where they already sit — no export step, no second copy to keep in sync.
+
+| File | `type` |
+|---|---|
+| `notes/<repo>/*.md` | `note` |
+| `docs/<repo>/*.md` (autonote) | `feature` |
+| `docs/<repo>/*.md` (`lorekeeper doc`) | `doc` |
+| `docs/<repo>/adr/ADR-*.md` | `adr` |
+| `lorekeeper distill` output | `architecture`, `onboarding`, `runbook`, `conventions`, `api` |
+
+Notes written before this are backfilled by `lorekeeper reindex`, which types them by location, prints a conformance summary, and then reindexes as usual. It is idempotent and never rewrites `date:`/`updated:`, so it will not silently un-stale your notes:
+
+```
+$ lorekeeper reindex
+okf: 14 concepts typed (2 backfilled)
+```
+
+`index.md` and `log.md` are optional in the spec, and lorekeeper deliberately does not generate them — inside the live store they would masquerade as notes to every reader in the pipeline (session priming, compaction handoff, the autonote merge scan).
+
+### How to share your notes
+
+The store lives in `$XDG_DATA_HOME` / `%LOCALAPPDATA%`. That makes it private and per-machine: your teammates cannot see it, CI cannot see it, and a fresh clone starts with nothing. Copy a bundle into the repo it describes and commit it:
+
+```bash
+cp -r "$(lorekeeper home)/notes/myrepo" ~/src/myrepo/.okf
+cd ~/src/myrepo && git add .okf && git commit -m "docs: share lorekeeper memory as an OKF bundle"
+```
+
+```powershell
+Copy-Item -Recurse "$(lorekeeper home)\notes\myrepo" C:\src\myrepo\.okf
+```
+
+Ship `docs/<repo>/` the same way if you want the durable docs (architecture, runbook, ADRs) alongside the scratch notes. Anyone who clones the repo now gets the memory — and any agent that can read a file picks it up, with lorekeeper not installed. Point them at it with a line in the repo's own `CLAUDE.md` / `AGENTS.md`:
+
+> Curated repo knowledge lives in `.okf/` — an OKF v0.1 bundle. Read `.okf/*.md` before non-trivial work; each file's frontmatter says what kind of concept it is.
+
+If the other side *does* run lorekeeper, they can drop the bundle straight into their store instead — `cp -r .okf "$(lorekeeper home)/notes/myrepo"` — and it lands in their semantic search on the next `lorekeeper reindex`.
+
+Since a bundle is just a directory of markdown, review it before you publish. Notes are written from your sessions and can contain internal hostnames, paths, or decisions you would rather not push to a public repo.
 
 ## Requirements
 

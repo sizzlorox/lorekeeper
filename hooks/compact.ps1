@@ -267,6 +267,7 @@ $surfacedBlock
 Exact format:
 
 ---
+type: note
 repo: $repoField
 topic: <2-5 words>
 date: <YYYY-MM-DD of first version; reuse from existing if merging, else $today>

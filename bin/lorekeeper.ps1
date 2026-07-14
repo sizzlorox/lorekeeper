@@ -23,7 +23,7 @@ lorekeeper <command> [args]
   note <repo> <slug>  open $EDITOR on a note (creates from template if missing)
   doc  <repo> <slug>  same, for docs
   ls [repo]           list notes/docs (optionally scoped to one repo)
-  reindex             force qmd update + embed
+  reindex             backfill missing OKF `type:` fields, then qmd update + embed
   distill [repo]      synthesize durable docs (architecture/runbook/onboarding/
                       conventions/api) from notes + codebase. Run from the
                       repo root; arg defaults to the current git toplevel name.
@@ -46,6 +46,7 @@ function Ensure-Template {
     New-Item -ItemType Directory -Force -Path (Split-Path $TemplateNote) | Out-Null
     $tpl = @'
 ---
+type: __TYPE__
 repo: __REPO__
 topic: __SLUG__
 date: __DATE__
@@ -65,7 +66,73 @@ tags: []
 <relative links or qmd:// refs>
 '@
     Write-Utf8NoBom $TemplateNote $tpl
+  } else {
+    $existing = [System.IO.File]::ReadAllText($TemplateNote)
+    if ($existing -notmatch '(?m)^type:') {
+      # Pre-OKF template already on disk. Add the type line, keep any user edits.
+      $nl = if ($existing -match "`r`n") { "`r`n" } else { "`n" }
+      $eol = $existing.IndexOf("`n")
+      if ($eol -ge 0) {
+        $head = $existing.Substring(0, $eol + 1)
+        $tail = $existing.Substring($eol + 1)
+        Write-Utf8NoBom $TemplateNote ($head + "type: __TYPE__$nl" + $tail)
+      }
+    }
   }
+}
+
+# --- OKF v0.1 conformance (https://github.com/GoogleCloudPlatform/knowledge-catalog) ---
+# Every non-reserved .md must carry non-empty frontmatter `type`. Everything
+# lorekeeper writes now does; this backfills what was written before.
+
+function Get-OkfType([string]$Rel) {
+  # Type is a free string; derive from the tree.
+  $r = $Rel.Replace('\', '/')
+  if ($r -like 'docs/*/adr/*') { return 'adr' }
+  if ($r -like 'docs/*')       { return 'doc' }
+  return 'note'
+}
+
+# Insert `type:` into one file. $true if it changed the file, $false if already conformant.
+function Repair-OkfFile {
+  param([string]$Path, [string]$Type)
+  $raw = [System.IO.File]::ReadAllText($Path)
+  $nl  = if ($raw -match "`r`n") { "`r`n" } else { "`n" }
+
+  if ($raw -match "^---[ `t]*\r?\n") {
+    $open = $Matches[0]
+    $rest = $raw.Substring($open.Length)
+    $close = [regex]::Match($rest, "(?m)^---[ `t]*\r?$")
+    $fm = if ($close.Success) { $rest.Substring(0, $close.Index) } else { $rest }
+    if ($fm -match "(?m)^type:[ `t]*\S") { return $false }
+    $new = $open + "type: $Type$nl" + $rest
+  } else {
+    # No frontmatter at all — hand-made file. Prepend a minimal conformant block.
+    $m = [regex]::Match($raw, '(?m)^#\s+(.+?)\s*$')
+    $title = if ($m.Success) { $m.Groups[1].Value } else { [System.IO.Path]::GetFileNameWithoutExtension($Path) }
+    $ts = (Get-Item -LiteralPath $Path).LastWriteTime.ToString('yyyy-MM-dd')
+    $new = "---$nl" + "type: $Type$nl" + "title: $title$nl" + "timestamp: $ts$nl" + "---$nl$nl" + $raw
+  }
+  Write-Utf8NoBom $Path $new
+  return $true
+}
+
+# Walk the store, type anything untyped. Idempotent. Never touches date:/updated:.
+function Invoke-OkfBackfill {
+  $total = 0
+  $fixed = 0
+  $rootLen = (Resolve-Path $LorekeeperHome).Path.TrimEnd('\').Length + 1
+  foreach ($kind in 'notes', 'docs') {
+    $base = Join-Path $LorekeeperHome $kind
+    if (-not (Test-Path $base)) { continue }
+    foreach ($f in (Get-ChildItem -Path $base -Recurse -Filter *.md -File -ErrorAction SilentlyContinue)) {
+      if ($f.Name -in 'index.md', 'log.md') { continue }   # OKF reserved
+      $total++
+      $rel = $f.FullName.Substring($rootLen)
+      if (Repair-OkfFile -Path $f.FullName -Type (Get-OkfType $rel)) { $fixed++ }
+    }
+  }
+  Write-Output ("okf: {0} concepts typed ({1} backfilled)" -f $total, $fixed)
 }
 
 function Open-Editor([string]$File) {
@@ -80,9 +147,12 @@ function Open-Kind {
   $dir = Join-Path $LorekeeperHome "$Kind\$Repo"
   New-Item -ItemType Directory -Force -Path $dir | Out-Null
   $file = Join-Path $dir "$Slug.md"
+  # OKF v0.1 requires a non-empty `type` on every concept; derive it from the tree.
+  $type = if ($Kind -eq 'docs') { 'doc' } else { 'note' }
   if (-not (Test-Path $file)) {
     Ensure-Template
     $body = (Get-Content -Raw $TemplateNote).
+      Replace('__TYPE__',  $type).
       Replace('__REPO__',  $Repo).
       Replace('__SLUG__',  $Slug).
       Replace('__DATE__',  (Get-Date -Format 'yyyy-MM-dd')).
@@ -226,6 +296,7 @@ switch ($cmd) {
   }
 
   'reindex' {
+    Invoke-OkfBackfill
     & qmd update
     & qmd embed
     break
