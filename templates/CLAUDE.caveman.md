@@ -1,6 +1,6 @@
 ## lorekeeper — per-repo cross-session memory
 
-Two qmd collections. `<repo>` = basename of git toplevel.
+Two qmd collections. `<repo>` = repo (worktrees shared).
 
 - `lorekeeper-notes` → `__LOREKEEPER_HOME__/notes/<repo>/*.md` (scratch memory)
 - `lorekeeper-docs`  → `__LOREKEEPER_HOME__/docs/<repo>/*.md`  (reference docs)

@@ -24,14 +24,14 @@ if (-not $data) { exit 0 }
 $cwd = [string]$data.cwd
 if (-not $cwd -or -not (Test-Path $cwd)) { exit 0 }
 
-# Resolve repo
-$repo = ''
-Push-Location $cwd
-try {
-  $top = & git rev-parse --show-toplevel 2>$null
-  if ($LASTEXITCODE -eq 0 -and $top) { $repo = Split-Path $top.Trim() -Leaf }
-} finally { Pop-Location }
-if (-not $repo) { exit 0 }
+# Resolve repo identity (worktree-/submodule-aware) via the shared resolver.
+$lkLib = Join-Path $PSScriptRoot 'lib\resolve.ps1'
+if (-not (Test-Path $lkLib)) { $lkLib = Join-Path $LorekeeperHome 'hooks\lib\resolve.ps1' }
+if (Test-Path $lkLib) { . $lkLib }
+if (-not (Get-Command Resolve-LkRepo -ErrorAction SilentlyContinue)) { exit 0 }
+$lk = Resolve-LkRepo -Dir $cwd
+if (-not $lk.Toplevel) { exit 0 }   # not a git repo
+$repo = $lk.Key                     # worktrees share one key; submodules keep their own
 
 # Collect note/doc files (most recently modified first, cap at 10)
 $notesDir = Join-Path $LorekeeperHome "notes\$repo"

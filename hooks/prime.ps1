@@ -31,20 +31,17 @@ if ($evt -eq 'UserPromptSubmit' -and $sessionId) {
     Remove-Item -Force -ErrorAction SilentlyContinue
 }
 
-# Resolve repo name
-$repo = ''
-if ($cwd -and (Test-Path $cwd)) {
-  Push-Location $cwd
-  try {
-    $top = & git rev-parse --show-toplevel 2>$null
-    if ($LASTEXITCODE -eq 0 -and $top) {
-      $repo = Split-Path $top.Trim() -Leaf
-    } else {
-      $repo = Split-Path $cwd -Leaf
-    }
-  } finally { Pop-Location }
-}
+# Resolve repo identity (worktree-/submodule-aware) via the shared resolver.
+# Prefer the sibling lib (canonical hooks + repo), fall back to the installed copy.
+$lkLib = Join-Path $PSScriptRoot 'lib\resolve.ps1'
+if (-not (Test-Path $lkLib)) { $lkLib = Join-Path $LorekeeperHome 'hooks\lib\resolve.ps1' }
+if (Test-Path $lkLib) { . $lkLib }
 
+$lk = $null
+if ($cwd -and (Test-Path $cwd) -and (Get-Command Resolve-LkRepo -ErrorAction SilentlyContinue)) {
+  $lk = Resolve-LkRepo -Dir $cwd
+}
+$repo = if ($lk) { $lk.Key } else { '' }
 if (-not $repo) { exit 0 }
 
 $notesDir       = Join-Path $LorekeeperHome "notes\$repo"
@@ -85,17 +82,55 @@ $notesFiles  = @(Get-MdList -Dir $notesDir)
 $docsFiles   = @(Get-MdList -Dir $docsDir)
 $sharedFiles = @(Get-MdList -Dir $sharedNotesDir)
 
+# --- cross-boundary hints: one line each, no file listings (token-flat) ---
+function Count-Md([string]$Dir) {
+  if (-not (Test-Path $Dir)) { return 0 }
+  @(Get-ChildItem -Path $Dir -Recurse -Filter *.md -File -ErrorAction SilentlyContinue).Count
+}
+
+$parentLine = ''
+if ($lk.ParentKey) {
+  $pn = Count-Md (Join-Path $LorekeeperHome "notes\$($lk.ParentKey)")
+  $pd = Count-Md (Join-Path $LorekeeperHome "docs\$($lk.ParentKey)")
+  if ($pn -ne 0 -or $pd -ne 0) {
+    $parentLine = "parent '$($lk.ParentKey)': $pn notes, $pd docs — search it if the task crosses the boundary."
+  }
+}
+
+$submodLine = ''
+$gm = if ($lk.Toplevel) { Join-Path $lk.Toplevel '.gitmodules' } else { '' }
+if (-not $lk.ParentKey -and $gm -and (Test-Path $gm)) {
+  $acc = @(); $c = 0
+  foreach ($line in @(& git -C $lk.Toplevel config --file $gm --get-regexp '\.path$' 2>$null)) {
+    $sp = ($line -split '\s+', 2)[1]
+    if (-not $sp) { continue }
+    $sk = Split-Path -Leaf $sp
+    $stot = (Count-Md (Join-Path $LorekeeperHome "notes\$sk")) + (Count-Md (Join-Path $LorekeeperHome "docs\$sk"))
+    if ($stot -eq 0) { continue }
+    $c++; if ($c -le 5) { $acc += "$sk ($stot)" }
+  }
+  if ($acc.Count -gt 0) { $submodLine = 'submodules with memory: ' + ($acc -join ', ') }
+}
+
 if ($notesFiles.Count -eq 0 -and $docsFiles.Count -eq 0 -and $sharedFiles.Count -eq 0) {
-  # No memory yet — stay silent.
+  # No own memory. Emit at most one cross-boundary hint, else stay silent.
+  if ($parentLine) { Write-Output "## lorekeeper: $parentLine" }
+  elseif ($submodLine) { Write-Output "## lorekeeper: $submodLine" }
   exit 0
 }
 
-Write-Output "## lorekeeper: repo '$repo'"
+$hdrSuffix = ''
+if ($lk.ParentKey) { $hdrSuffix = " (submodule of '$($lk.ParentKey)')" }
+elseif ($lk.IsWorktree -eq '1') { $hdrSuffix = ' (worktree)' }
+
+Write-Output "## lorekeeper: repo '$repo'$hdrSuffix"
 Write-Output ''
 Write-Output 'Prior memory exists. Use `mcp__qmd__query` with collections=["lorekeeper-notes","lorekeeper-docs"]'
 Write-Output 'to search semantically, or `mcp__qmd__get` to fetch a specific file by path.'
 Write-Output "Pull only what the current task needs — don't bulk-load."
 Write-Output ''
+if ($parentLine) { Write-Output $parentLine; Write-Output '' }
+if ($submodLine) { Write-Output $submodLine; Write-Output '' }
 
 function Emit-Listing {
   param([string]$Kind, [string]$RepoName, [string[]]$Files, [string]$BaseDir)

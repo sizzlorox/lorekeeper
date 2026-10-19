@@ -1,0 +1,18 @@
+## lorekeeper: repo 'goldrepo'
+
+Prior memory exists. Use `mcp__qmd__query` with collections=["lorekeeper-notes","lorekeeper-docs"]
+to search semantically, or `mcp__qmd__get` to fetch a specific file by path.
+Pull only what the current task needs — don't bulk-load.
+
+### notes (2 files):
+  notes/goldrepo/fresh.md
+  notes/goldrepo/stale.md [STALE?]
+
+### shared notes (1 files — cross-repo):
+  notes/shared/team.md
+
+### docs (1 files):
+  docs/goldrepo/arch.md
+
+> **lorekeeper:** distill pending for this repo — notes have grown significantly since
+> last synthesis. Consider running `lorekeeper distill` when this session ends.

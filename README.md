@@ -180,7 +180,35 @@ lorekeeper distill [repo]      Synthesize durable docs (architecture/runbook/onb
                                conventions/api) from notes + codebase. Must be run from
                                inside the repo's git worktree. Costs a few $ per run.
 lorekeeper ls [repo]           List notes/docs per repo
+lorekeeper ls --orphans        List keys that look like orphaned worktree memory
+lorekeeper merge-key <from> <to>  Move notes/docs from one key into another
+lorekeeper tokens [path]       Estimate per-session token cost (policy + prime + precompact)
 ```
+
+### Worktrees & submodules
+
+The memory key is the **main repo's** name, derived without `--path-format` (git ≥ 2.13):
+
+- **Worktrees share memory.** Every linked worktree of a repo resolves to the same
+  key, so notes written from `~/src/app-feat` land in and read from `notes/app/`.
+- **Submodules keep their own key** (their path basename, matching pre-change behavior)
+  and, when the superproject has memory, `prime` prints a one-line pointer to it. A
+  superproject session likewise gets one line naming submodules that have memory.
+  (A *worktree of a submodule* reports no superproject to git, so it gets no parent
+  pointer — it still resolves to the submodule's own key.)
+- **Collision escape hatch.** Two unrelated repos that share a basename collide on one
+  key. Override per repo with `git config lorekeeper.key <name>` (stored in the common
+  config, so all worktrees of that repo pick it up).
+- **Migrating old worktree notes.** Notes written before worktrees shared a key sit under
+  the worktree's own name. `lorekeeper ls --orphans` lists likely candidates and
+  `lorekeeper merge-key <from> <to>` folds them in (slug collisions keep both as
+  `<slug>-from-<from>.md`; ADRs renumber onto the destination's sequence).
+
+Known limitations (tracked, not fixed here): autonote attributes a session's writes to the
+cwd's key, so a session rooted at a superproject that only edited submodule files still
+writes under the superproject key; basename collisions are not auto-detected (use the
+override); `precompact` still ships the repo's 10 most-recent notes rather than
+task-relevant ones (a separate PR).
 
 ## omp support
 
@@ -259,7 +287,7 @@ Removes the hooks, the CLAUDE.md block, and the qmd collections. Your actual not
 Claude Code session starts
     │
     ▼
-SessionStart hook ─► reads git toplevel ─► ls $LOREKEEPER_HOME/{notes,docs}/<repo>
+SessionStart hook ─► resolves repo key (worktree-/submodule-aware) ─► ls $LOREKEEPER_HOME/{notes,docs}/<repo>
     │                                          │
     │                                          ▼
     │               if memory exists: injects index → Claude queries via qmd MCP

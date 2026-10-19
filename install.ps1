@@ -135,6 +135,11 @@ Copy-Item -Force (Join-Path $ScriptDir 'hooks\autonote.ps1') (Join-Path $Lorekee
 Copy-Item -Force (Join-Path $ScriptDir 'hooks\compact.ps1') (Join-Path $LorekeeperHome 'hooks\compact.ps1')
 Copy-Item -Force (Join-Path $ScriptDir 'hooks\precompact.ps1') (Join-Path $LorekeeperHome 'hooks\precompact.ps1')
 
+# shared repo-identity resolver (sourced by every hook + the CLI; ship both runtimes)
+New-Item -ItemType Directory -Force -Path (Join-Path $LorekeeperHome 'hooks\lib') | Out-Null
+Copy-Item -Force (Join-Path $ScriptDir 'hooks\lib\resolve.ps1') (Join-Path $LorekeeperHome 'hooks\lib\resolve.ps1')
+Copy-Item -Force (Join-Path $ScriptDir 'hooks\lib\resolve.sh')  (Join-Path $LorekeeperHome 'hooks\lib\resolve.sh') -ErrorAction SilentlyContinue
+
 
 # bash siblings too (Git Bash users, WSL, etc.)
 Copy-Item -Force (Join-Path $ScriptDir 'hooks\prime.sh')     (Join-Path $LorekeeperHome 'hooks\prime.sh')    -ErrorAction SilentlyContinue

@@ -8,6 +8,14 @@ OMP_DIR="${OMP_CONFIG_DIR:-$HOME/.omp}"
 # Resolve $LOREKEEPER_HOME from env, the omp marker, the Claude marker, then default.
 LOREKEEPER_HOME="${LOREKEEPER_HOME:-$(cat "$OMP_DIR/.lorekeeper-home" 2>/dev/null || cat "$CLAUDE_DIR/.lorekeeper-home" 2>/dev/null || echo "$HOME/.local/share/lorekeeper")}"
 
+# Locate hooks + the shared repo-identity resolver. Prefer a repo checkout
+# (bin/../hooks), fall back to the installed canonical hooks.
+_LK_SELFDIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || echo .)"
+HOOKS_DIR="$_LK_SELFDIR/../hooks"
+[ -d "$HOOKS_DIR" ] || HOOKS_DIR="$LOREKEEPER_HOME/hooks"
+# shellcheck source=../hooks/lib/resolve.sh
+[ -f "$HOOKS_DIR/lib/resolve.sh" ] && . "$HOOKS_DIR/lib/resolve.sh"
+
 # shellcheck disable=SC2016  # $EDITOR / $LOREKEEPER_HOME are literal in help text
 USAGE='lorekeeper <command> [args]
 
@@ -16,6 +24,9 @@ USAGE='lorekeeper <command> [args]
   note <repo> <slug>  open $EDITOR on a note (creates from template if missing)
   doc  <repo> <slug>  same, for docs
   ls [repo]           list notes/docs (optionally scoped to one repo)
+  ls --orphans        list keys that look like orphaned worktree memory
+  merge-key <from> <to>  move notes/docs from one key into another
+  tokens [path]       estimate per-session token cost (policy + prime + precompact)
   reindex             backfill missing OKF `type:` fields, then qmd update + embed
   distill [repo]      synthesize durable docs (architecture/runbook/onboarding/
                       conventions/api) from notes + codebase. Run from the
@@ -243,7 +254,29 @@ case "$cmd" in
 
   ls)
     repo="${1:-}"
-    if [[ -n "$repo" ]]; then
+    if [[ "$repo" == "--orphans" ]]; then
+      # Keys whose name looks like "<existingkey>-<suffix>" — likely orphaned
+      # worktree memory from before worktrees shared a key. A hint only.
+      nd="$LOREKEEPER_HOME/notes"
+      keys=()
+      if [[ -d "$nd" ]]; then
+        while IFS= read -r d; do keys+=("$(basename "$d")"); done \
+          < <(find "$nd" -mindepth 1 -maxdepth 1 -type d 2>/dev/null)
+      fi
+      found=0
+      if [[ "${#keys[@]}" -gt 0 ]]; then   # bash 3.2 + set -u aborts on empty "${keys[@]}"
+        for a in "${keys[@]}"; do
+          for b in "${keys[@]}"; do
+            [[ "$a" == "$b" ]] && continue
+            if [[ "$a" == "$b-"* ]]; then
+              printf "  %-28s maybe worktree of '%s'  ->  lorekeeper merge-key %s %s\n" "$a" "$b" "$a" "$b"
+              found=1
+            fi
+          done
+        done
+      fi
+      [[ "$found" == 0 ]] && echo "(no orphan-looking keys)"
+    elif [[ -n "$repo" ]]; then
       for kind in notes docs; do
         d="$LOREKEEPER_HOME/$kind/$repo"
         [[ -d "$d" ]] || continue
@@ -316,11 +349,12 @@ case "$cmd" in
   distill)
     command -v claude >/dev/null || die "claude CLI not on PATH"
     here="$(pwd)"
-    toplevel="$(git -C "$here" rev-parse --show-toplevel 2>/dev/null || true)"
-    [[ -n "$toplevel" ]] || die "run this from inside a git worktree"
-    repo_arg="${1:-$(basename "$toplevel")}"
-    if [[ "$(basename "$toplevel")" != "$repo_arg" ]]; then
-      die "current git toplevel is '$(basename "$toplevel")', not '$repo_arg' — cd into that worktree first"
+    command -v lk_resolve >/dev/null 2>&1 || die "resolver lib missing ($HOOKS_DIR/lib/resolve.sh)"
+    lk_resolve "$here"
+    [[ -n "$LK_TOPLEVEL" ]] || die "run this from inside a git worktree"
+    repo_arg="${1:-$LK_KEY}"
+    if [[ "$LK_KEY" != "$repo_arg" ]]; then
+      die "current repo key is '$LK_KEY', not '$repo_arg' — cd into that repo first"
     fi
     repo="$repo_arg"
     notes_dir="$LOREKEEPER_HOME/notes/$repo"
@@ -380,6 +414,156 @@ OUTPUT DISCIPLINE:
     watermark_dir="$LOREKEEPER_HOME/.distill-watermark"
     mkdir -p "$watermark_dir"
     echo "$notes_count" > "$watermark_dir/$repo"
+    ;;
+
+  tokens)
+    if [[ "${1:-}" == "--transcripts" ]]; then
+      # Phase 2 gate: scan recent transcripts for mcp qmd *query* results and report
+      # median result size + cross-key contamination. Build the MCP only if either
+      # trips (>20% cross-key, or median > 1500 tok).
+      days="${2:-7}"
+      command -v jq >/dev/null || die "jq required for --transcripts"
+      set +e +o pipefail   # analysis only; tolerate per-file jq/SIGPIPE hiccups
+      proj="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects"
+      scan_dirs=("$proj")
+      [[ -d "$LOREKEEPER_HOME/transcripts" ]] && scan_dirs+=("$LOREKEEPER_HOME/transcripts")
+      tmp="$(mktemp)"
+      nfiles=0
+      for d in "${scan_dirs[@]}"; do
+        [[ -d "$d" ]] || continue
+        while IFS= read -r f; do
+          nfiles=$((nfiles + 1))
+          scwd="$(jq -r 'select(.cwd) | .cwd' "$f" 2>/dev/null | head -1)"
+          skey=""
+          if [[ -n "$scwd" ]]; then
+            swin="$scwd"
+            command -v cygpath >/dev/null 2>&1 && swin="$(cygpath -u "$scwd" 2>/dev/null || echo "$scwd")"
+            if [[ -d "$swin" ]] && command -v lk_key >/dev/null 2>&1; then skey="$(lk_key "$swin")"; else skey="$(basename "$scwd")"; fi
+          fi
+          # Pair qmd *query* tool_use ids (assistant) with tool_result (user). Skip
+          # api-request* lines, which re-send history and would double-count.
+          jq -s -r --arg sk "$skey" '
+            [ .[] | select(.type=="assistant") | (.message.content? // []) | .[]?
+              | select(.type=="tool_use" and (.name|ascii_downcase|test("qmd.*query"))) | .id ] as $ids
+            | ($ids | map({(.):true}) | add // {}) as $set
+            | [ .[] | select(.type=="user") | (.message.content? // []) | .[]?
+                | select(.type=="tool_result" and ($set[.tool_use_id] // false)) ]
+            | .[]
+            | (if (.content|type)=="string" then .content else ([.content[]?|.text? // ""]|join("")) end) as $t
+            | ([ $t | scan("lorekeeper-(?:notes|docs)/([^/\"]+)/") ] | unique) as $k
+            | [ ($t|length), (if ($k - [$sk] | length) > 0 then 1 else 0 end) ] | @tsv
+          ' "$f" 2>/dev/null >> "$tmp"
+        done < <(find "$d" -name '*.jsonl' -mtime -"$days" 2>/dev/null)
+      done
+      awk -F'\t' -v days="$days" -v nf="$nfiles" '
+        { n++; cross += $2; toks[n] = int($1/4) }
+        END {
+          printf "transcript gate (last %s days, %d files scanned)\n", days, nf
+          if (n == 0) { print "  qmd query results: 0 — insufficient data; stop at Phase 1."; exit 0 }
+          # median
+          for (i=1;i<=n;i++) for (j=i+1;j<=n;j++) if (toks[j]<toks[i]) { t=toks[i];toks[i]=toks[j];toks[j]=t }
+          med = (n%2) ? toks[(n+1)/2] : int((toks[n/2]+toks[n/2+1])/2)
+          cp = (cross*100.0)/n
+          printf "  qmd query results:   %d\n", n
+          printf "  median result size:  %d tok  (gate: >1500)\n", med
+          printf "  cross-key results:   %.1f%%  (gate: >20%%)\n", cp
+          trip = (cp > 20 || med > 1500)
+          printf "  verdict: %s\n", (trip ? "GATE TRIPPED — Phase 2 (thin MCP) warranted" : "gate not tripped — stop at Phase 1")
+        }
+      ' "$tmp"
+      rm -f "$tmp"
+      exit 0
+    fi
+    # Estimate per-session token cost (chars/4): policy block + prime + precompact.
+    path="${1:-.}"
+    [[ -d "$path" ]] || die "not a directory: $path"
+    abs="$(cd "$path" && pwd)"
+    est() { awk '{ n += length($0) + 1 } END { printf "%d", int(n/4) }'; }
+
+    # Policy block: installed CLAUDE.md block if present, else the repo template.
+    policy=""
+    if grep -qF "<!-- LOREKEEPER:START -->" "$CLAUDE_DIR/CLAUDE.md" 2>/dev/null; then
+      policy="$(awk '/<!-- LOREKEEPER:START -->/{f=1} f{print} /<!-- LOREKEEPER:END -->/{f=0}' "$CLAUDE_DIR/CLAUDE.md")"
+      psrc="installed CLAUDE.md block"
+    elif [[ -f "$_LK_SELFDIR/../templates/CLAUDE.md" ]]; then
+      policy="$(cat "$_LK_SELFDIR/../templates/CLAUDE.md")"
+      psrc="repo template CLAUDE.md"
+    else
+      psrc="(none)"
+    fi
+
+    envelope="$(printf '{"cwd":"%s","hook_event_name":"SessionStart"}' "$abs")"
+    prime_out="$(printf '%s' "$envelope" | LOREKEEPER_HOME="$LOREKEEPER_HOME" bash "$HOOKS_DIR/prime.sh" 2>/dev/null || true)"
+    precompact_out="$(printf '%s' "$envelope" | LOREKEEPER_HOME="$LOREKEEPER_HOME" bash "$HOOKS_DIR/precompact.sh" 2>/dev/null || true)"
+
+    pt="$(printf '%s' "$policy" | est)"
+    rt="$(printf '%s' "$prime_out" | est)"
+    ct="$(printf '%s' "$precompact_out" | est)"
+    key="?"; command -v lk_resolve >/dev/null 2>&1 && { lk_resolve "$abs"; key="$LK_KEY"; }
+
+    printf "tokens for key '%s'  (path: %s)\n" "$key" "$abs"
+    printf "  %-28s %6s tok\n" "policy ($psrc)" "$pt"
+    printf "  %-28s %6s tok\n" "prime output" "$rt"
+    printf "  %-28s %6s tok\n" "precompact output" "$ct"
+    printf "  %-28s %6s tok\n" "TOTAL" "$((pt + rt + ct))"
+    ;;
+
+  merge-key)
+    from="${1:-}"; to="${2:-}"
+    [[ -n "$from" && -n "$to" ]] || die "usage: lorekeeper merge-key <from> <to>"
+    [[ "$from" == "$to" ]] && die "from and to are the same key"
+    # Keys are single path segments. Reject anything that could escape the store.
+    for k in "$from" "$to"; do
+      case "$k" in
+        .|..|*/*|*\\*) die "invalid key '$k' (must be a single name, no / \\ . ..)" ;;
+      esac
+    done
+    moved=0
+    for kind in notes docs; do
+      src="$LOREKEEPER_HOME/$kind/$from"
+      [[ -d "$src" ]] || continue
+      dst="$LOREKEEPER_HOME/$kind/$to"
+      mkdir -p "$dst"
+      # Next ADR number in the destination, so merged ADRs continue its sequence.
+      next_adr=1
+      if [[ -d "$dst/adr" ]]; then
+        max=0
+        while IFS= read -r a; do
+          n="$(basename "$a" | sed -n 's/^ADR-\([0-9]\{1,\}\)-.*/\1/p')"
+          [[ -n "$n" && "$((10#$n))" -gt "$max" ]] && max="$((10#$n))"
+        done < <(find "$dst/adr" -maxdepth 1 -type f -name 'ADR-*.md' 2>/dev/null)
+        next_adr="$((max + 1))"
+      fi
+      while IFS= read -r -d '' f; do
+        rel="${f#"$src"/}"
+        case "$rel" in
+          adr/ADR-*)
+            slug="$(basename "$rel" | sed 's/^ADR-[0-9]\{1,\}-//')"
+            mkdir -p "$dst/adr"
+            target="$dst/adr/$(printf 'ADR-%04d-%s' "$next_adr" "$slug")"
+            next_adr="$((next_adr + 1))"
+            ;;
+          *)
+            target="$dst/$rel"
+            mkdir -p "$(dirname "$target")"
+            if [[ -e "$target" ]]; then
+              # Keep both on collision; never overwrite an existing -from- copy.
+              base="${target%.md}-from-$from"; target="$base.md"; i=2
+              while [[ -e "$target" ]]; do target="$base-$i.md"; i=$((i + 1)); done
+            fi
+            ;;
+        esac
+        mv "$f" "$target"
+        moved="$((moved + 1))"
+      done < <(find "$src" -type f -name '*.md' -print0 2>/dev/null | sort -z)
+      # Drop now-empty source tree.
+      find "$src" -type d -empty -delete 2>/dev/null || true
+    done
+    echo "merged $moved file(s): '$from' -> '$to'"
+    # Register destination context + reindex (best-effort).
+    qmd context add "qmd://lorekeeper-notes/$to" "Memory for repo '$to'" 2>/dev/null || true
+    qmd context add "qmd://lorekeeper-docs/$to"  "Reference docs for repo '$to'" 2>/dev/null || true
+    ( qmd update && qmd embed ) >/dev/null 2>&1 || true
     ;;
 
   *) die "unknown command: $cmd  (try: lorekeeper help)" ;;

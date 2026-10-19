@@ -108,6 +108,12 @@ install -m 0755 "$SCRIPT_DIR/hooks/autonote.sh" "$LOREKEEPER_HOME/hooks/autonote
 install -m 0755 "$SCRIPT_DIR/hooks/compact.sh"  "$LOREKEEPER_HOME/hooks/compact.sh"
 install -m 0755 "$SCRIPT_DIR/hooks/precompact.sh"  "$LOREKEEPER_HOME/hooks/precompact.sh"
 
+# shared repo-identity resolver (sourced by every hook + the CLI; both runtimes
+# ship so one $LOREKEEPER_HOME serves bash and PowerShell installs)
+install -d "$LOREKEEPER_HOME/hooks/lib"
+install -m 0644 "$SCRIPT_DIR/hooks/lib/resolve.sh"  "$LOREKEEPER_HOME/hooks/lib/resolve.sh"
+install -m 0644 "$SCRIPT_DIR/hooks/lib/resolve.ps1" "$LOREKEEPER_HOME/hooks/lib/resolve.ps1" 2>/dev/null || true
+
 
 # ps1 siblings ship alongside so a single $LOREKEEPER_HOME serves both
 # bash and PowerShell installs without re-running the platform installer.

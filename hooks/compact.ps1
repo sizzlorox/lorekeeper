@@ -31,13 +31,14 @@ $compactSummary = [string]$data.compact_summary
 if (-not $transcriptPath -or -not (Test-Path $transcriptPath)) { exit 0 }
 if (-not $cwd -or -not (Test-Path $cwd)) { exit 0 }
 
-$repo = ''
-Push-Location $cwd
-try {
-  $top = & git rev-parse --show-toplevel 2>$null
-  if ($LASTEXITCODE -eq 0 -and $top) { $repo = Split-Path $top.Trim() -Leaf }
-} finally { Pop-Location }
-if (-not $repo) { exit 0 }
+# Shared repo-identity resolver (worktree-/submodule-aware).
+$lkLib = Join-Path $PSScriptRoot 'lib\resolve.ps1'
+if (-not (Test-Path $lkLib)) { $lkLib = Join-Path $LorekeeperHome 'hooks\lib\resolve.ps1' }
+if (Test-Path $lkLib) { . $lkLib }
+if (-not (Get-Command Resolve-LkRepo -ErrorAction SilentlyContinue)) { exit 0 }
+$lk = Resolve-LkRepo -Dir $cwd
+if (-not $lk.Toplevel) { exit 0 }   # not a git repo
+$repo = $lk.Key                     # worktrees share one key; submodules keep their own
 
 # Dedup with compact-specific key: sessionId-compact-timestamp
 $seenDir = Join-Path $LorekeeperHome '.autonote-seen'

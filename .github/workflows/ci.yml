@@ -12,7 +12,25 @@ jobs:
       - name: shellcheck
         run: |
           sudo apt-get update && sudo apt-get install -y shellcheck
-          shellcheck install.sh uninstall.sh hooks/*.sh qmd/*.sh bin/lorekeeper
+          shellcheck install.sh uninstall.sh hooks/*.sh hooks/lib/*.sh qmd/*.sh bin/lorekeeper tests/*.sh
+
+  resolver:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - name: resolver parity (sh + ps1 + ts) and prime golden
+        run: |
+          bash tests/resolve.sh
+          bash tests/prime-golden.sh
+      - name: repo identity goes through the shared resolver only
+        run: |
+          hits="$(grep -rn 'rev-parse --show-toplevel' hooks bin omp-plugin/src \
+                    | grep -v 'hooks/lib/' | grep -v 'omp-plugin/src/resolve.ts' || true)"
+          if [ -n "$hits" ]; then
+            echo "direct show-toplevel outside the resolver:"; echo "$hits"; exit 1
+          fi
+          echo "ok: only the resolver resolves repo identity"
 
   psscriptanalyzer:
     runs-on: ubuntu-latest

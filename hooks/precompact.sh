@@ -20,10 +20,15 @@ input="$(cat)"
 cwd="$(jq -r '.cwd // empty' <<<"$input" 2>/dev/null)"
 [[ -z "$cwd" ]] && exit 0
 
-# Resolve repo
-toplevel="$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null || true)"
-[[ -z "$toplevel" ]] && exit 0
-repo="$(basename "$toplevel")"
+# Resolve repo identity (worktree- and submodule-aware) via the shared resolver.
+_LK_LIB="$(dirname "${BASH_SOURCE[0]:-$0}")/lib/resolve.sh"
+[[ -f "$_LK_LIB" ]] || _LK_LIB="$LOREKEEPER_HOME/hooks/lib/resolve.sh"
+# shellcheck source=lib/resolve.sh
+[[ -f "$_LK_LIB" ]] && . "$_LK_LIB"
+command -v lk_resolve >/dev/null 2>&1 || exit 0
+lk_resolve "$cwd"
+[[ -z "$LK_TOPLEVEL" ]] && exit 0   # not a git repo
+repo="$LK_KEY"                      # worktrees share one key; submodules keep their own
 
 # --- Handoff rules (always printed) ---
 cat << 'RULES'

@@ -23,6 +23,9 @@ lorekeeper <command> [args]
   note <repo> <slug>  open $EDITOR on a note (creates from template if missing)
   doc  <repo> <slug>  same, for docs
   ls [repo]           list notes/docs (optionally scoped to one repo)
+  ls --orphans        list keys that look like orphaned worktree memory
+  merge-key <from> <to>  move notes/docs from one key into another
+  tokens [path]       estimate per-session token cost (policy + prime + precompact)
   reindex             backfill missing OKF `type:` fields, then qmd update + embed
   distill [repo]      synthesize durable docs (architecture/runbook/onboarding/
                       conventions/api) from notes + codebase. Run from the
@@ -168,6 +171,12 @@ $cmd = if ($args.Count -ge 1) { $args[0] } else { 'help' }
 $rest = @()
 if ($args.Count -ge 2) { $rest = $args[1..($args.Count - 1)] }
 
+# Locate hooks + the shared repo-identity resolver (repo checkout vs installed).
+$HooksDir = Join-Path $PSScriptRoot '..\hooks'
+if (-not (Test-Path (Join-Path $HooksDir 'prime.ps1'))) { $HooksDir = Join-Path $LorekeeperHome 'hooks' }
+$lkLib = Join-Path $HooksDir 'lib\resolve.ps1'
+if (Test-Path $lkLib) { . $lkLib }
+
 switch ($cmd) {
   'home' { Write-Output $LorekeeperHome; break }
 
@@ -269,7 +278,24 @@ switch ($cmd) {
 
   'ls' {
     $repo = if ($rest.Count -ge 1) { $rest[0] } else { '' }
-    if ($repo) {
+    if ($repo -eq '--orphans') {
+      # Keys whose name looks like "<existingkey>-<suffix>" — likely orphaned
+      # worktree memory from before worktrees shared a key. A hint only.
+      $nd = Join-Path $LorekeeperHome 'notes'
+      $keys = @()
+      if (Test-Path $nd) { $keys = @(Get-ChildItem -Path $nd -Directory -ErrorAction SilentlyContinue | ForEach-Object { $_.Name }) }
+      $found = $false
+      foreach ($a in $keys) {
+        foreach ($b in $keys) {
+          if ($a -eq $b) { continue }
+          if ($a.StartsWith("$b-")) {
+            "{0,-28} maybe worktree of '{1}'  ->  lorekeeper merge-key {2} {3}" -f $a, $b, $a, $b | ForEach-Object { Write-Output "  $_" }
+            $found = $true
+          }
+        }
+      }
+      if (-not $found) { Write-Output '(no orphan-looking keys)' }
+    } elseif ($repo) {
       foreach ($kind in 'notes','docs') {
         $d = Join-Path $LorekeeperHome "$kind\$repo"
         if (-not (Test-Path $d)) { continue }
@@ -358,15 +384,12 @@ switch ($cmd) {
   'distill' {
     if (-not (Get-Command claude -ErrorAction SilentlyContinue)) { Die 'claude CLI not on PATH' }
     $here = (Get-Location).Path
-    Push-Location $here
-    try {
-      $top = & git rev-parse --show-toplevel 2>$null
-    } finally { Pop-Location }
-    if ($LASTEXITCODE -ne 0 -or -not $top) { Die 'run this from inside a git worktree' }
-    $topName = Split-Path $top.Trim() -Leaf
-    $repoArg = if ($rest.Count -ge 1) { $rest[0] } else { $topName }
-    if ($topName -ne $repoArg) {
-      Die ("current git toplevel is '$topName', not '$repoArg' - cd into that worktree first")
+    if (-not (Get-Command Resolve-LkRepo -ErrorAction SilentlyContinue)) { Die "resolver lib missing ($lkLib)" }
+    $lk = Resolve-LkRepo -Dir $here
+    if (-not $lk.Toplevel) { Die 'run this from inside a git worktree' }
+    $repoArg = if ($rest.Count -ge 1) { $rest[0] } else { $lk.Key }
+    if ($lk.Key -ne $repoArg) {
+      Die ("current repo key is '$($lk.Key)', not '$repoArg' - cd into that repo first")
     }
     $repo = $repoArg
     $notesDir = Join-Path $LorekeeperHome "notes\$repo"
@@ -428,6 +451,154 @@ OUTPUT DISCIPLINE:
     $watermarkDir = Join-Path $LorekeeperHome '.distill-watermark'
     New-Item -ItemType Directory -Force -Path $watermarkDir | Out-Null
     Set-Content -LiteralPath (Join-Path $watermarkDir $repo) -Value "$notesCount" -Encoding UTF8
+    break
+  }
+
+  'tokens' {
+    if ($rest.Count -ge 1 -and $rest[0] -eq '--transcripts') {
+      # Phase 2 gate: scan recent transcripts for qmd *query* results; report median
+      # size + cross-key %. Build the MCP only if either trips (>20% / >1500 tok).
+      $days = if ($rest.Count -ge 2) { [int]$rest[1] } else { 7 }
+      $dirs = @(Join-Path $ClaudeDir 'projects')
+      $tdir = Join-Path $LorekeeperHome 'transcripts'; if (Test-Path $tdir) { $dirs += $tdir }
+      $cut = (Get-Date).AddDays(-$days)
+      $lens = New-Object System.Collections.ArrayList
+      $cross = 0; $n = 0; $nf = 0
+      foreach ($d in $dirs) {
+        if (-not (Test-Path $d)) { continue }
+        Get-ChildItem -Path $d -Recurse -Filter *.jsonl -File -ErrorAction SilentlyContinue |
+          Where-Object { $_.LastWriteTime -ge $cut } | ForEach-Object {
+            $nf++
+            $objs = foreach ($ln in (Get-Content -LiteralPath $_.FullName -ErrorAction SilentlyContinue)) {
+              try { $ln | ConvertFrom-Json } catch { }
+            }
+            $cwdLine = $objs | Where-Object { $_.cwd } | Select-Object -First 1
+            $skey = ''
+            if ($cwdLine) {
+              $sc = [string]$cwdLine.cwd
+              if ((Test-Path $sc) -and (Get-Command Resolve-LkRepo -ErrorAction SilentlyContinue)) { $skey = (Resolve-LkRepo -Dir $sc).Key }
+              else { $skey = Split-Path -Leaf $sc }
+            }
+            $ids = @{}
+            foreach ($o in $objs) {
+              if ($o.type -ne 'assistant' -or -not $o.message.content) { continue }
+              foreach ($c in @($o.message.content)) {
+                if ($c.type -eq 'tool_use' -and $c.name -and ($c.name.ToLower() -match 'qmd.*query')) { $ids[$c.id] = $true }
+              }
+            }
+            if ($ids.Count -eq 0) { return }
+            foreach ($o in $objs) {
+              if ($o.type -ne 'user' -or -not $o.message.content) { continue }
+              foreach ($c in @($o.message.content)) {
+                if ($c.type -ne 'tool_result' -or -not $ids[$c.tool_use_id]) { continue }
+                $txt = if ($c.content -is [string]) { $c.content } else { (@($c.content) | ForEach-Object { $_.text }) -join '' }
+                $keys = [regex]::Matches($txt, 'lorekeeper-(?:notes|docs)/([^/"]+)/') | ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique
+                $n++; [void]$lens.Add([int]($txt.Length / 4))
+                if (($keys | Where-Object { $_ -ne $skey }).Count -gt 0) { $cross++ }
+              }
+            }
+          }
+      }
+      Write-Output ("transcript gate (last {0} days, {1} files scanned)" -f $days, $nf)
+      if ($n -eq 0) { Write-Output '  qmd query results: 0 - insufficient data; stop at Phase 1.'; break }
+      $sorted = @($lens | Sort-Object)
+      $med = if ($n % 2) { $sorted[[int](($n - 1) / 2)] } else { [int](($sorted[$n / 2 - 1] + $sorted[$n / 2]) / 2) }
+      $cp = [math]::Round($cross * 100.0 / $n, 1)
+      Write-Output ("  qmd query results:   {0}" -f $n)
+      Write-Output ("  median result size:  {0} tok  (gate: >1500)" -f $med)
+      Write-Output ("  cross-key results:   {0}%  (gate: >20%)" -f $cp)
+      $trip = ($cp -gt 20 -or $med -gt 1500)
+      Write-Output ("  verdict: {0}" -f $(if ($trip) { 'GATE TRIPPED - Phase 2 (thin MCP) warranted' } else { 'gate not tripped - stop at Phase 1' }))
+      break
+    }
+    $path = if ($rest.Count -ge 1) { $rest[0] } else { '.' }
+    if (-not (Test-Path $path)) { Die "not a directory: $path" }
+    $abs = (Resolve-Path $path).Path
+    function Est([string]$s) { if (-not $s) { return 0 } [int][math]::Floor($s.Length / 4) }
+
+    $claudeMd = Join-Path $ClaudeDir 'CLAUDE.md'
+    $policy = ''; $psrc = '(none)'
+    if ((Test-Path $claudeMd) -and (Select-String -Path $claudeMd -SimpleMatch '<!-- LOREKEEPER:START -->' -Quiet)) {
+      $m = [regex]::Match((Get-Content -Raw $claudeMd), '(?s)<!-- LOREKEEPER:START -->.*?<!-- LOREKEEPER:END -->')
+      if ($m.Success) { $policy = $m.Value; $psrc = 'installed CLAUDE.md block' }
+    }
+    if (-not $policy) {
+      $tpl = Join-Path $PSScriptRoot '..\templates\CLAUDE.md'
+      if (Test-Path $tpl) { $policy = Get-Content -Raw $tpl; $psrc = 'repo template CLAUDE.md' }
+    }
+
+    $env:LOREKEEPER_HOME = $LorekeeperHome   # the spawned hooks must resolve the same store
+    $envelope = '{"cwd":"' + $abs.Replace('\','/') + '","hook_event_name":"SessionStart"}'
+    $prime = $envelope | & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $HooksDir 'prime.ps1') 2>$null | Out-String
+    $pre   = $envelope | & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $HooksDir 'precompact.ps1') 2>$null | Out-String
+    $key = '?'
+    if (Get-Command Resolve-LkRepo -ErrorAction SilentlyContinue) { $key = (Resolve-LkRepo -Dir $abs).Key }
+    $pt = Est $policy; $rt = Est $prime; $ct = Est $pre
+    Write-Output ("tokens for key '{0}'  (path: {1})" -f $key, $abs)
+    Write-Output ("  {0,-28} {1,6} tok" -f "policy ($psrc)", $pt)
+    Write-Output ("  {0,-28} {1,6} tok" -f 'prime output', $rt)
+    Write-Output ("  {0,-28} {1,6} tok" -f 'precompact output', $ct)
+    Write-Output ("  {0,-28} {1,6} tok" -f 'TOTAL', ($pt + $rt + $ct))
+    break
+  }
+
+  'merge-key' {
+    $from = if ($rest.Count -ge 1) { $rest[0] } else { $null }
+    $to   = if ($rest.Count -ge 2) { $rest[1] } else { $null }
+    if (-not $from -or -not $to) { Die 'usage: lorekeeper merge-key <from> <to>' }
+    if ($from -eq $to) { Die 'from and to are the same key' }
+    # Keys are single path segments. Reject anything that could escape the store.
+    foreach ($k in @($from, $to)) {
+      if ($k -eq '.' -or $k -eq '..' -or $k -match '[\\/]') { Die "invalid key '$k' (must be a single name, no / \\ . ..)" }
+    }
+    $moved = 0
+    foreach ($kind in 'notes','docs') {
+      $src = Join-Path $LorekeeperHome "$kind\$from"
+      if (-not (Test-Path $src)) { continue }
+      $dst = Join-Path $LorekeeperHome "$kind\$to"
+      New-Item -ItemType Directory -Force -Path $dst | Out-Null
+      $dstAdr = Join-Path $dst 'adr'
+      $nextAdr = 1
+      if (Test-Path -LiteralPath $dstAdr) {
+        $max = 0
+        Get-ChildItem -LiteralPath $dstAdr -Filter 'ADR-*.md' -File -ErrorAction SilentlyContinue | ForEach-Object {
+          if ($_.Name -match '^ADR-(\d+)-') { $n = [int]$Matches[1]; if ($n -gt $max) { $max = $n } }
+        } | Out-Null
+        $nextAdr = $max + 1
+      }
+      $srcRoot = (Resolve-Path -LiteralPath $src).Path.TrimEnd('\')
+      # -LiteralPath everywhere: a slug like foo[1].md must not be read as a wildcard,
+      # or the collision guard misses and Move-Item silently overwrites (data loss).
+      # Sort by name so merged ADRs renumber in order (parity with the sorted find in bash).
+      Get-ChildItem -LiteralPath $src -Recurse -Filter *.md -File -ErrorAction SilentlyContinue |
+        Sort-Object FullName | ForEach-Object {
+        $rel = $_.FullName.Substring($srcRoot.Length + 1)
+        if ($rel.Replace('\','/') -match '^adr/ADR-') {
+          $slug = ($_.Name -replace '^ADR-\d+-','')
+          New-Item -ItemType Directory -Force -Path $dstAdr | Out-Null
+          $target = Join-Path $dstAdr ('ADR-{0:D4}-{1}' -f $nextAdr, $slug)
+          $nextAdr++
+        } else {
+          $target = Join-Path $dst $rel
+          New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
+          if (Test-Path -LiteralPath $target) {
+            # Keep both on collision; never overwrite an existing -from- copy.
+            $tbase = ($target -replace '\.md$', "-from-$from"); $target = "$tbase.md"; $i = 2
+            while (Test-Path -LiteralPath $target) { $target = "$tbase-$i.md"; $i++ }
+          }
+        }
+        Move-Item -LiteralPath $_.FullName -Destination $target -Force
+        $moved++
+      }
+      if (-not (Get-ChildItem -LiteralPath $src -Recurse -File -ErrorAction SilentlyContinue)) {
+        Remove-Item -LiteralPath $src -Recurse -Force -ErrorAction SilentlyContinue
+      }
+    }
+    Write-Output "merged $moved file(s): '$from' -> '$to'"
+    & qmd context add "qmd://lorekeeper-notes/$to" "Memory for repo '$to'" 2>$null | Out-Null
+    & qmd context add "qmd://lorekeeper-docs/$to"  "Reference docs for repo '$to'" 2>$null | Out-Null
+    & qmd update 2>$null | Out-Null
+    & qmd embed  2>$null | Out-Null
     break
   }
 

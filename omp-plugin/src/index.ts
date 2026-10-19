@@ -1,6 +1,5 @@
 import * as path from "node:path";
 import * as fs from "node:fs";
-import { spawn } from "node:child_process";
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -14,6 +13,7 @@ import type {
 import { runHook } from "./dispatch.js";
 import { TranscriptWriter } from "./transcript.js";
 import { resolveLorekeeperHome } from "./paths.js";
+import { resolveRepo } from "./resolve.js";
 
 const HANDOFF_RULES: readonly string[] = [
   "When summarizing this session for compaction, follow these rules:",
@@ -141,19 +141,11 @@ export default function lorekeeperPlugin(pi: ExtensionAPI): void {
     // This ensures the compacted context preserves awareness of prior learnings.
     const home = resolveLorekeeperHome();
     const cwd = ctx.cwd;
-    let repo = "";
-    try {
-      const result = await new Promise<string>((resolve, reject) => {
-        const child = spawn("git", ["rev-parse", "--show-toplevel"], { cwd });
-        let out = "";
-        child.stdout?.on("data", (d: Buffer) => { out += d.toString(); });
-        child.once("close", (code) => code === 0 ? resolve(out.trim()) : reject());
-        child.once("error", reject);
-      });
-      repo = path.basename(result);
-    } catch {
-      return; // not a git repo
-    }
+    // Worktree-/submodule-aware key: worktrees share one memory, submodules
+    // keep their own. Mirror of hooks/lib/resolve.sh.
+    const ident = resolveRepo(cwd);
+    if (!ident.toplevel) return; // not a git repo
+    const repo = ident.key;
     if (!repo) return;
 
     const notesDir = path.join(home, "notes", repo);

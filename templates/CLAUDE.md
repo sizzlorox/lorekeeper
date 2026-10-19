@@ -1,7 +1,7 @@
 ## lorekeeper — cross-session memory per repo
 
-Two collections of personal memory, organized by the basename of the current
-git toplevel (`<repo-name>`):
+Two collections of personal memory, keyed by repo (`<repo-name>`). Worktrees
+of a repo share one key:
 
 - `lorekeeper-notes` — scratch memory under `__LOREKEEPER_HOME__/notes/<repo-name>/*.md`
 - `lorekeeper-docs`  — durable reference docs under `__LOREKEEPER_HOME__/docs/<repo-name>/*.md`
