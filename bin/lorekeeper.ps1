@@ -470,7 +470,7 @@ OUTPUT DISCIPLINE:
           Where-Object { $_.LastWriteTime -ge $cut } | ForEach-Object {
             $nf++
             $objs = foreach ($ln in (Get-Content -LiteralPath $_.FullName -ErrorAction SilentlyContinue)) {
-              try { $ln | ConvertFrom-Json } catch { }
+              try { $ln | ConvertFrom-Json } catch { continue }
             }
             $cwdLine = $objs | Where-Object { $_.cwd } | Select-Object -First 1
             $skey = ''

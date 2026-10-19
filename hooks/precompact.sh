@@ -23,7 +23,7 @@ cwd="$(jq -r '.cwd // empty' <<<"$input" 2>/dev/null)"
 # Resolve repo identity (worktree- and submodule-aware) via the shared resolver.
 _LK_LIB="$(dirname "${BASH_SOURCE[0]:-$0}")/lib/resolve.sh"
 [[ -f "$_LK_LIB" ]] || _LK_LIB="$LOREKEEPER_HOME/hooks/lib/resolve.sh"
-# shellcheck source=lib/resolve.sh
+# shellcheck source=lib/resolve.sh disable=SC1091
 [[ -f "$_LK_LIB" ]] && . "$_LK_LIB"
 command -v lk_resolve >/dev/null 2>&1 || exit 0
 lk_resolve "$cwd"

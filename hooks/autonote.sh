@@ -32,7 +32,7 @@ session_id="$(jq -r '.session_id // empty' <<<"$input" 2>/dev/null)"
 # sibling lib (canonical hooks + repo), fall back to the installed copy.
 _LK_LIB="$(dirname "${BASH_SOURCE[0]:-$0}")/lib/resolve.sh"
 [[ -f "$_LK_LIB" ]] || _LK_LIB="$LOREKEEPER_HOME/hooks/lib/resolve.sh"
-# shellcheck source=lib/resolve.sh
+# shellcheck source=lib/resolve.sh disable=SC1091
 [[ -f "$_LK_LIB" ]] && . "$_LK_LIB"
 command -v lk_resolve >/dev/null 2>&1 || exit 0
 lk_resolve "$cwd"

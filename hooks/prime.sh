@@ -34,7 +34,7 @@ fi
 # installed copy (Claude shim lives elsewhere and renames the hook).
 _LK_LIB="$(dirname "${BASH_SOURCE[0]:-$0}")/lib/resolve.sh"
 [[ -f "$_LK_LIB" ]] || _LK_LIB="$LOREKEEPER_HOME/hooks/lib/resolve.sh"
-# shellcheck source=lib/resolve.sh
+# shellcheck source=lib/resolve.sh disable=SC1091
 [[ -f "$_LK_LIB" ]] && . "$_LK_LIB"
 
 repo=""

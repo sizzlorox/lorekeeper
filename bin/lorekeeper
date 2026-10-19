@@ -13,7 +13,7 @@ LOREKEEPER_HOME="${LOREKEEPER_HOME:-$(cat "$OMP_DIR/.lorekeeper-home" 2>/dev/nul
 _LK_SELFDIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || echo .)"
 HOOKS_DIR="$_LK_SELFDIR/../hooks"
 [ -d "$HOOKS_DIR" ] || HOOKS_DIR="$LOREKEEPER_HOME/hooks"
-# shellcheck source=../hooks/lib/resolve.sh
+# shellcheck source=../hooks/lib/resolve.sh disable=SC1091
 [ -f "$HOOKS_DIR/lib/resolve.sh" ] && . "$HOOKS_DIR/lib/resolve.sh"
 
 # shellcheck disable=SC2016  # $EDITOR / $LOREKEEPER_HOME are literal in help text
