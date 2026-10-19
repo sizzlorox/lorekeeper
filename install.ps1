@@ -283,10 +283,19 @@ if (-not $NoOmp -and (Test-Path $OmpPluginPath)) {
     Say 'building omp plugin'
     Push-Location $OmpPluginPath
     try {
-      bun install
-      if ($LASTEXITCODE -ne 0) { throw "bun install failed in $OmpPluginPath" }
-      bun run build
-      if ($LASTEXITCODE -ne 0) { throw "bun run build failed in $OmpPluginPath" }
+      # bun/tsc echo their command banner to stderr; under -ErrorActionPreference
+      # 'Stop' that stderr becomes a terminating error even on exit 0. Run these
+      # native calls under 'Continue' and judge success by $LASTEXITCODE only.
+      $savedEap = $ErrorActionPreference
+      $ErrorActionPreference = 'Continue'
+      try {
+        bun install 2>&1 | ForEach-Object { "$_" }
+        if ($LASTEXITCODE -ne 0) { throw "bun install failed in $OmpPluginPath" }
+        bun run build 2>&1 | ForEach-Object { "$_" }
+        if ($LASTEXITCODE -ne 0) { throw "bun run build failed in $OmpPluginPath" }
+      } finally {
+        $ErrorActionPreference = $savedEap
+      }
     } finally {
       Pop-Location
     }
